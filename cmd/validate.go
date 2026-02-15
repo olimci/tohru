@@ -65,11 +65,11 @@ func validateAction(_ context.Context, cmd *cli.Command) error {
 func printImportTree(tree manifest.ImportTree, sourceDir, prefix string, isLast bool) {
 	label := formatTreeLabel(tree.Path, sourceDir)
 	if prefix == "" {
-		fmt.Printf("- %s\n", label)
+		fmt.Printf("%s\n", label)
 	} else {
-		branch := "|- "
+		branch := "├── "
 		if isLast {
-			branch = "`- "
+			branch = "└── "
 		}
 		fmt.Printf("%s%s%s\n", prefix, branch, label)
 	}
@@ -77,12 +77,12 @@ func printImportTree(tree manifest.ImportTree, sourceDir, prefix string, isLast 
 	nextPrefix := prefix
 	if prefix != "" {
 		if isLast {
-			nextPrefix += "   "
+			nextPrefix += "    "
 		} else {
-			nextPrefix += "|  "
+			nextPrefix += "│   "
 		}
 	} else {
-		nextPrefix = "   "
+		nextPrefix = "    "
 	}
 
 	for i, child := range tree.Imports {

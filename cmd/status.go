@@ -42,9 +42,9 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	backupsOnly := cmd.Bool("backups")
+	backups := cmd.Bool("backups")
 
-	if backupsOnly {
+	if backups {
 		renderBackupStatus(snapshot)
 		return nil
 	}
@@ -55,7 +55,6 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	} else {
 		fmt.Println("No source loaded")
 	}
-	fmt.Printf("Manifest state: %s\n", snapshot.Manifest.State)
 
 	fmt.Println()
 	fmt.Println("Tracked objects:")
@@ -77,9 +76,6 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 			}
 		}
 	}
-
-	fmt.Println()
-	renderBackupStatus(snapshot)
 
 	return nil
 }
