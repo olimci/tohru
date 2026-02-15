@@ -416,6 +416,22 @@ func prepareDestinationForApply(store Store, cfg config.Config, op manifestOp, p
 		return prev, nil
 	}
 
+	if op.Kind == opDir {
+		currentDigest, parseErr := digest.Parse(current.Digest)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse digest for %s: %w", op.Dest, parseErr)
+		}
+		if currentDigest.Kind == digest.KindDir {
+			if !op.Track {
+				return prev, nil
+			}
+			return nil, fmt.Errorf("tracked dir destination already exists: %s", op.Dest)
+		}
+		if op.Track {
+			return nil, fmt.Errorf("tracked dir destination exists and is not a directory: %s", op.Dest)
+		}
+	}
+
 	if !op.Track {
 		if !force {
 			return nil, fmt.Errorf("destination exists (would clobber), use --force to overwrite")

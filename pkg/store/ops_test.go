@@ -192,6 +192,85 @@ dest = %q
 	}
 }
 
+func TestLoadAllowsExistingUntrackedDir(t *testing.T) {
+	t.Parallel()
+
+	store := testInstalledStore(t)
+	sourceDir := t.TempDir()
+	targetDir := filepath.Join(t.TempDir(), "existing")
+
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	sentinel := filepath.Join(targetDir, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write sentinel file: %v", err)
+	}
+
+	manifest := fmt.Sprintf(`[tohru]
+version = "%s"
+
+[source]
+name = "example"
+description = "example source"
+
+[[dir]]
+path = %q
+tracked = false
+`, version.Version, targetDir)
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "tohru.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	res, err := store.Load(sourceDir, false)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if res.TrackedCount != 0 {
+		t.Fatalf("Load tracked count = %d, want 0", res.TrackedCount)
+	}
+
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("sentinel file should remain, stat err: %v", err)
+	}
+}
+
+func TestLoadRejectsExistingTrackedDir(t *testing.T) {
+	t.Parallel()
+
+	store := testInstalledStore(t)
+	sourceDir := t.TempDir()
+	targetDir := filepath.Join(t.TempDir(), "existing")
+
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+
+	manifest := fmt.Sprintf(`[tohru]
+version = "%s"
+
+[source]
+name = "example"
+description = "example source"
+
+[[dir]]
+path = %q
+`, version.Version, targetDir)
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "tohru.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	_, err := store.Load(sourceDir, false)
+	if err == nil {
+		t.Fatal("expected Load to reject existing tracked dir")
+	}
+	if !strings.Contains(err.Error(), "tracked dir destination already exists") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestStatusSummarizesTrackedAndBackups(t *testing.T) {
 	t.Parallel()
 
