@@ -23,6 +23,8 @@ type TrackedStatus struct {
 	Path          string
 	PrevDigest    string
 	BackupPresent bool
+	Drifted       bool
+	Missing       bool
 }
 
 type BackupRefStatus struct {
@@ -55,6 +57,26 @@ func (s Store) Status() (StatusSnapshot, error) {
 		}
 
 		item := TrackedStatus{Path: path}
+
+		current, exists, snapshotErr := snapshotObjectIfExists(path)
+		if snapshotErr != nil {
+			return StatusSnapshot{}, fmt.Errorf("snapshot tracked path %s: %w", path, snapshotErr)
+		}
+		if !exists {
+			item.Drifted = true
+			item.Missing = true
+		} else if strings.TrimSpace(f.Curr.Digest) != "" {
+			expectedDigest, parseExpectedErr := digest.Parse(f.Curr.Digest)
+			if parseExpectedErr != nil {
+				return StatusSnapshot{}, fmt.Errorf("parse tracked digest for %s: %w", f.Path, parseExpectedErr)
+			}
+			actualDigest, parseActualErr := digest.Parse(current.Digest)
+			if parseActualErr != nil {
+				return StatusSnapshot{}, fmt.Errorf("parse current digest for %s: %w", f.Path, parseActualErr)
+			}
+			item.Drifted = expectedDigest.String() != actualDigest.String()
+		}
+
 		if f.Prev != nil && strings.TrimSpace(f.Prev.Digest) != "" {
 			d, parseErr := digest.Parse(f.Prev.Digest)
 			if parseErr != nil {

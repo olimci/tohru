@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -198,101 +197,4 @@ func (s Store) SaveLock(lck lock.Lock) error {
 	}
 
 	return writeJSON(s.LockPath(), lck)
-}
-
-func ensureDefaultConfig(path string) (bool, error) {
-	if _, err := os.Stat(path); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("stat %s: %w", path, err)
-	}
-
-	if err := writeTOML(path, DefaultConfig()); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func ensureDefaultLock(s Store) (bool, error) {
-	if _, err := os.Stat(s.LockPath()); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("stat %s: %w", s.LockPath(), err)
-	}
-
-	if err := writeJSON(s.LockPath(), DefaultLock()); err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func writeTOML(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create directory for %s: %w", path, err)
-	}
-
-	tmpPath := path + ".tmp"
-
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", tmpPath, err)
-	}
-
-	encErr := toml.NewEncoder(f).Encode(value)
-	closeErr := f.Close()
-	if encErr != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("encode %s: %w", path, encErr)
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close %s: %w", tmpPath, closeErr)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-
-	return nil
-}
-
-func writeJSON(path string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
-	}
-	return writeData(path, data)
-}
-
-func decodeJSONFile(path string, value any) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	dec := json.NewDecoder(f)
-	if err := dec.Decode(value); err != nil {
-		return err
-	}
-	return nil
-}
-
-func writeData(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create directory for %s: %w", path, err)
-	}
-
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmpPath, err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-
-	return nil
 }

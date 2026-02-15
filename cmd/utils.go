@@ -3,8 +3,19 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
+
+func applyOptionsFromCommand(cmd *cli.Command) store.Options {
+	if cmd == nil {
+		return store.Options{}
+	}
+	return store.Options{
+		Force:          cmd.Bool("force"),
+		DiscardChanges: cmd.Bool("discard-changes"),
+	}
+}
 
 func isVerbose(cmd *cli.Command) bool {
 	if cmd == nil {

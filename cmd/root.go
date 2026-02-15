@@ -7,6 +7,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
+// TODO: revise this, potentially move to main.go
 // Commands:
 // install
 //   (inialises .config/tohru)
@@ -41,13 +42,18 @@ func Execute(ctx context.Context, args []string) error {
 			},
 		},
 		Commands: []*cli.Command{
+			// application management
 			installCommand(),
+			uninstallCommand(),
+			tidyCommand(),
+			statusCommand(),
+			versionCommand(),
+
+			// source management
 			loadCommand(),
 			reloadCommand(),
 			unloadCommand(),
-			tidyCommand(),
-			statusCommand(),
-			uninstallCommand(),
+			validateCommand(),
 		},
 	}
 

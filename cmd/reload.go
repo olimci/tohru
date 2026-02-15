@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -16,7 +16,11 @@ func reloadCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:    "force",
 				Aliases: []string{"f"},
-				Usage:   "reload current source",
+				Usage:   "allow clobbering existing paths when reloading",
+			},
+			&cli.BoolFlag{
+				Name:  "discard-changes",
+				Usage: "allow replacing modified managed files without enabling full force behavior",
 			},
 		},
 		Action: reloadAction,
@@ -29,18 +33,18 @@ func reloadAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 0 {
 		return fmt.Errorf("reload does not accept arguments")
 	}
-	force := cmd.Bool("force")
+	opts := applyOptionsFromCommand(cmd)
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	if !store.IsInstalled() {
+	if !s.IsInstalled() {
 		return fmt.Errorf("tohru is not installed, run `tohru install` first")
 	}
 
-	res, err := store.Reload(force)
+	res, err := s.Reload(opts)
 	if err != nil {
 		return err
 	}

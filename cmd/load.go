@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -19,6 +19,10 @@ func loadCommand() *cli.Command {
 				Name:    "force",
 				Aliases: []string{"f"},
 				Usage:   "overwrite existing files or modified managed files",
+			},
+			&cli.BoolFlag{
+				Name:  "discard-changes",
+				Usage: "allow replacing modified managed files without enabling full force behavior",
 			},
 		},
 		Action: loadAction,
@@ -36,14 +40,14 @@ func loadAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 1 {
 		return fmt.Errorf("load accepts exactly one source argument")
 	}
-	force := cmd.Bool("force")
+	opts := applyOptionsFromCommand(cmd)
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	res, err := store.Load(source, force)
+	res, err := s.Load(source, opts)
 	if err != nil {
 		return err
 	}

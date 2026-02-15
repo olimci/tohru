@@ -17,26 +17,13 @@ import (
 	"github.com/olimci/tohru/pkg/version"
 )
 
-type LoadResult struct {
-	SourceDir            string
-	SourceName           string
-	TrackedCount         int
-	UnloadedSourceName   string
-	UnloadedTrackedCount int
-	RemovedBackupCount   int
-	ChangedPaths         []string
+type Options struct {
+	Force          bool
+	DiscardChanges bool
 }
 
-type UnloadResult struct {
-	SourceName         string
-	RemovedCount       int
-	RemovedBackupCount int
-	ChangedPaths       []string
-}
-
-type TidyResult struct {
-	RemovedCount int
-	ChangedPaths []string
+func (o Options) allowModifiedRemoval() bool {
+	return o.Force || o.DiscardChanges
 }
 
 type manifestOpKind string
@@ -54,11 +41,18 @@ type manifestOp struct {
 	Track  bool
 }
 
-func (s Store) Switch(source string, force bool) (LoadResult, error) {
-	return s.Load(source, force)
+type rollbackSnapshot struct {
+	root    string
+	entries []snapshotEntry
 }
 
-func (s Store) Load(source string, force bool) (LoadResult, error) {
+type snapshotEntry struct {
+	Path      string
+	Backup    string
+	HadObject bool
+}
+
+func (s Store) Load(source string, opts Options) (LoadResult, error) {
 	if err := s.EnsureInstalled(); err != nil {
 		return LoadResult{}, err
 	}
@@ -68,10 +62,10 @@ func (s Store) Load(source string, force bool) (LoadResult, error) {
 		return LoadResult{}, err
 	}
 
-	return s.switchWithConfig(cfg, source, force)
+	return s.switchWithConfig(cfg, source, opts)
 }
 
-func (s Store) Reload(force bool) (LoadResult, error) {
+func (s Store) Reload(opts Options) (LoadResult, error) {
 	if !s.IsInstalled() {
 		return LoadResult{}, ErrNotInstalled
 	}
@@ -96,15 +90,10 @@ func (s Store) Reload(force bool) (LoadResult, error) {
 		return LoadResult{}, fmt.Errorf("loaded source location is empty")
 	}
 
-	return s.switchWithConfig(cfg, lck.Manifest.Loc, force)
+	return s.switchWithConfig(cfg, lck.Manifest.Loc, opts)
 }
 
-// Upgrade is kept as a compatibility alias for older callers.
-func (s Store) Upgrade(force bool) (LoadResult, error) {
-	return s.Reload(force)
-}
-
-func (s Store) Unload(force bool) (UnloadResult, error) {
+func (s Store) Unload(opts Options) (UnloadResult, error) {
 	if !s.IsInstalled() {
 		return UnloadResult{}, ErrNotInstalled
 	}
@@ -122,7 +111,7 @@ func (s Store) Unload(force bool) (UnloadResult, error) {
 	changes := newPathRecorder()
 
 	if len(lck.Files) > 0 {
-		if err := unloadManagedPaths(s, lck.Files, nil, force, changes.Add); err != nil {
+		if err := unloadManagedPaths(s, lck.Files, nil, opts, changes.Add); err != nil {
 			return UnloadResult{}, err
 		}
 	}
@@ -183,7 +172,7 @@ func (s Store) Tidy() (TidyResult, error) {
 	}, nil
 }
 
-func (s Store) switchWithConfig(cfg config.Config, source string, force bool) (LoadResult, error) {
+func (s Store) switchWithConfig(cfg config.Config, source string, opts Options) (LoadResult, error) {
 	m, sourceDir, err := manifest.Load(source)
 	if err != nil {
 		return LoadResult{}, err
@@ -213,24 +202,39 @@ func (s Store) switchWithConfig(cfg config.Config, source string, force bool) (L
 		occupiedByNew[op.Dest] = struct{}{}
 	}
 
-	if err := unloadManagedPaths(s, oldLock.Files, occupiedByNew, force, changes.Add); err != nil {
+	snapshot, err := captureRollbackSnapshot(s, oldLock.Files)
+	if err != nil {
 		return LoadResult{}, err
 	}
+	defer func() {
+		_ = snapshot.Cleanup()
+	}()
+
+	rollbackOnErr := func(err error) (LoadResult, error) {
+		if rollbackErr := rollbackSwitchState(s, oldLock, snapshot, changes.Paths()); rollbackErr != nil {
+			return LoadResult{}, fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+		}
+		return LoadResult{}, fmt.Errorf("%w (rolled back to previous state)", err)
+	}
+
+	if err := unloadManagedPaths(s, oldLock.Files, occupiedByNew, opts, changes.Add); err != nil {
+		return rollbackOnErr(err)
+	}
 	if err := cleanupTrackedAutoDirs(oldLock.Dirs); err != nil {
-		return LoadResult{}, err
+		return rollbackOnErr(err)
 	}
 
 	// Persist unloaded state before loading the new source so failures don't
 	// leave lock metadata claiming the old source is active.
 	unloaded := DefaultLock()
 	if err := s.SaveLock(unloaded); err != nil {
-		return LoadResult{}, err
+		return rollbackOnErr(err)
 	}
 	changes.Add(s.LockPath())
 
-	tracked, autoDirs, err := applyManifestOps(s, cfg, ops, oldByPath, force, changes.Add)
+	tracked, autoDirs, err := applyManifestOps(s, cfg, ops, oldByPath, opts.Force, changes.Add)
 	if err != nil {
-		return LoadResult{}, err
+		return rollbackOnErr(err)
 	}
 
 	newLock := DefaultLock()
@@ -242,7 +246,7 @@ func (s Store) switchWithConfig(cfg config.Config, source string, force bool) (L
 	newLock.Dirs = autoDirs
 
 	if err := s.SaveLock(newLock); err != nil {
-		return LoadResult{}, err
+		return rollbackOnErr(err)
 	}
 	changes.Add(s.LockPath())
 
@@ -358,6 +362,7 @@ func applyManifestOps(store Store, cfg config.Config, ops []manifestOp, oldByPat
 		}
 		for _, dir := range createdParents {
 			autoDirSet[dir] = struct{}{}
+			recordChange(recordPath, dir)
 		}
 
 		switch op.Kind {
@@ -470,9 +475,9 @@ func prepareDestinationForApply(store Store, cfg config.Config, op manifestOp, p
 	return prev, nil
 }
 
-func unloadManagedPaths(store Store, files []lock.File, occupiedByNew map[string]struct{}, force bool, recordPath func(string)) error {
+func unloadManagedPaths(store Store, files []lock.File, occupiedByNew map[string]struct{}, opts Options, recordPath func(string)) error {
 	for _, managed := range orderManagedFilesForRemoval(files) {
-		if err := removeManagedObject(managed, force, recordPath); err != nil {
+		if err := removeManagedObject(managed, opts, recordPath); err != nil {
 			return err
 		}
 
@@ -480,7 +485,7 @@ func unloadManagedPaths(store Store, files []lock.File, occupiedByNew map[string
 			if _, stillOccupied := occupiedByNew[managed.Path]; stillOccupied {
 				continue
 			}
-			if err := restoreBackupObject(store, managed.Prev, managed.Path, force, recordPath); err != nil {
+			if err := restoreBackupObject(store, managed.Prev, managed.Path, opts.Force, recordPath); err != nil {
 				return err
 			}
 		}
@@ -489,7 +494,7 @@ func unloadManagedPaths(store Store, files []lock.File, occupiedByNew map[string
 	return nil
 }
 
-func removeManagedObject(managed lock.File, force bool, recordPath func(string)) error {
+func removeManagedObject(managed lock.File, opts Options, recordPath func(string)) error {
 	path := strings.TrimSpace(managed.Path)
 	if path == "" {
 		return nil
@@ -500,7 +505,7 @@ func removeManagedObject(managed lock.File, force bool, recordPath func(string))
 		return fmt.Errorf("check managed path %s: %w", path, err)
 	}
 	if !exists {
-		if force {
+		if opts.Force {
 			return nil
 		}
 		return fmt.Errorf("managed path missing: %s", path)
@@ -514,7 +519,7 @@ func removeManagedObject(managed lock.File, force bool, recordPath func(string))
 	if err != nil {
 		return fmt.Errorf("invalid current digest for managed path %s: %w", path, err)
 	}
-	if !force && !expected.IsZero() && expected.String() != actual.String() {
+	if !opts.allowModifiedRemoval() && !expected.IsZero() && expected.String() != actual.String() {
 		return fmt.Errorf("managed path was modified: %s", path)
 	}
 
@@ -681,6 +686,143 @@ func orderManagedFilesForRemoval(files []lock.File) []lock.File {
 		}
 		return di > dj
 	})
+	return sorted
+}
+
+func captureRollbackSnapshot(store Store, files []lock.File) (rollbackSnapshot, error) {
+	root, err := os.MkdirTemp(store.Root, "switch-rollback-")
+	if err != nil {
+		return rollbackSnapshot{}, fmt.Errorf("create rollback snapshot directory: %w", err)
+	}
+
+	snapshot := rollbackSnapshot{
+		root:    root,
+		entries: make([]snapshotEntry, 0, len(files)),
+	}
+
+	seen := make(map[string]struct{}, len(files))
+	for i, tracked := range files {
+		path := strings.TrimSpace(tracked.Path)
+		if path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+
+		entry := snapshotEntry{Path: path}
+		_, exists, statErr := snapshotObjectIfExists(path)
+		if statErr != nil {
+			_ = snapshot.Cleanup()
+			return rollbackSnapshot{}, fmt.Errorf("snapshot managed path %s: %w", path, statErr)
+		}
+		if !exists {
+			snapshot.entries = append(snapshot.entries, entry)
+			continue
+		}
+
+		backupPath := filepath.Join(root, fmt.Sprintf("%06d", i), "object")
+		if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+			_ = snapshot.Cleanup()
+			return rollbackSnapshot{}, fmt.Errorf("create rollback snapshot parent for %s: %w", backupPath, err)
+		}
+		if err := fileutils.CopyPath(path, backupPath); err != nil {
+			_ = snapshot.Cleanup()
+			return rollbackSnapshot{}, fmt.Errorf("copy managed path %s into rollback snapshot: %w", path, err)
+		}
+
+		entry.Backup = backupPath
+		entry.HadObject = true
+		snapshot.entries = append(snapshot.entries, entry)
+	}
+
+	return snapshot, nil
+}
+
+func (s rollbackSnapshot) Cleanup() error {
+	if strings.TrimSpace(s.root) == "" {
+		return nil
+	}
+	return fileutils.RemovePath(s.root)
+}
+
+func rollbackSwitchState(store Store, oldLock lock.Lock, snapshot rollbackSnapshot, changedPaths []string) error {
+	for _, path := range sortPathsByDepth(changedPaths, true) {
+		if path == store.LockPath() {
+			continue
+		}
+		if err := fileutils.RemovePath(path); err != nil {
+			return fmt.Errorf("rollback remove changed path %s: %w", path, err)
+		}
+	}
+
+	removeTargets := make([]string, 0, len(snapshot.entries))
+	for _, entry := range snapshot.entries {
+		removeTargets = append(removeTargets, entry.Path)
+	}
+	for _, path := range sortPathsByDepth(removeTargets, true) {
+		if err := fileutils.RemovePath(path); err != nil {
+			return fmt.Errorf("rollback clear managed path %s: %w", path, err)
+		}
+	}
+
+	restoreEntries := append([]snapshotEntry(nil), snapshot.entries...)
+	sort.Slice(restoreEntries, func(i, j int) bool {
+		di := fileutils.PathDepth(restoreEntries[i].Path)
+		dj := fileutils.PathDepth(restoreEntries[j].Path)
+		if di == dj {
+			return restoreEntries[i].Path < restoreEntries[j].Path
+		}
+		return di < dj
+	})
+
+	for _, entry := range restoreEntries {
+		if !entry.HadObject {
+			continue
+		}
+		if err := fileutils.CopyPath(entry.Backup, entry.Path); err != nil {
+			return fmt.Errorf("rollback restore managed path %s: %w", entry.Path, err)
+		}
+	}
+
+	if err := store.SaveLock(oldLock); err != nil {
+		return fmt.Errorf("rollback restore lock: %w", err)
+	}
+
+	return nil
+}
+
+func sortPathsByDepth(paths []string, descending bool) []string {
+	sorted := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, raw := range paths {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		sorted = append(sorted, path)
+	}
+
+	sort.Slice(sorted, func(i, j int) bool {
+		di := fileutils.PathDepth(sorted[i])
+		dj := fileutils.PathDepth(sorted[j])
+		if di == dj {
+			if descending {
+				return sorted[i] > sorted[j]
+			}
+			return sorted[i] < sorted[j]
+		}
+		if descending {
+			return di > dj
+		}
+		return di < dj
+	})
+
 	return sorted
 }
 

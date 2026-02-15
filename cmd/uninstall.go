@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -18,6 +18,10 @@ func uninstallCommand() *cli.Command {
 				Aliases: []string{"f"},
 				Usage:   "force unload of modified managed files before uninstalling",
 			},
+			&cli.BoolFlag{
+				Name:  "discard-changes",
+				Usage: "allow uninstall to remove modified managed files without full force behavior",
+			},
 		},
 		Action: uninstallAction,
 	}
@@ -29,18 +33,18 @@ func uninstallAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 0 {
 		return fmt.Errorf("uninstall does not accept arguments")
 	}
-	force := cmd.Bool("force")
+	opts := applyOptionsFromCommand(cmd)
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	if !store.IsInstalled() {
+	if !s.IsInstalled() {
 		return fmt.Errorf("tohru is not installed")
 	}
 
-	unloadRes, err := store.Unload(force)
+	unloadRes, err := s.Unload(opts)
 	if err != nil {
 		return err
 	}
@@ -56,11 +60,11 @@ func uninstallAction(_ context.Context, cmd *cli.Command) error {
 	}
 	printChangedPaths(cmd, unloadRes.ChangedPaths)
 
-	if err := store.Uninstall(); err != nil {
+	if err := s.Uninstall(); err != nil {
 		return err
 	}
-	printChangedPaths(cmd, []string{store.Root})
+	printChangedPaths(cmd, []string{s.Root})
 
-	fmt.Printf("uninstalled tohru store from %s\n", store.Root)
+	fmt.Printf("uninstalled tohru store from %s\n", s.Root)
 	return nil
 }

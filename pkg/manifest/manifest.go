@@ -1,13 +1,16 @@
 package manifest
 
+import "strings"
+
 // Manifest represents a configuration file for a Tohru dotfiles source
 type Manifest struct {
 	Tohru  Tohru  `toml:"tohru"`  // application metadata
 	Source Source `toml:"source"` // source metadata
 
-	Links []Link `toml:"link"`
-	Files []File `toml:"file"`
-	Dirs  []Dir  `toml:"dir"`
+	Imports []Import `toml:"import"`
+	Links   []Link   `toml:"link"`
+	Files   []File   `toml:"file"`
+	Dirs    []Dir    `toml:"dir"`
 }
 
 type Tohru struct {
@@ -17,6 +20,12 @@ type Tohru struct {
 type Source struct {
 	Name        string `toml:"name"`
 	Description string `toml:"description"`
+}
+
+type Import struct {
+	Path string   `toml:"path"`
+	OS   []string `toml:"os"`
+	Arch []string `toml:"arch"`
 }
 
 type Link struct {
@@ -51,6 +60,43 @@ func (m *Manifest) ResolveDefaults() {
 	for i := range m.Dirs {
 		m.Dirs[i].resolveTracked()
 	}
+}
+
+func (m *Manifest) Merge(other Manifest) {
+	if version := strings.TrimSpace(other.Tohru.Version); version != "" {
+		m.Tohru.Version = version
+	}
+	if name := strings.TrimSpace(other.Source.Name); name != "" {
+		m.Source.Name = name
+	}
+	if description := strings.TrimSpace(other.Source.Description); description != "" {
+		m.Source.Description = description
+	}
+
+	m.Links = append(m.Links, other.Links...)
+	m.Files = append(m.Files, other.Files...)
+	m.Dirs = append(m.Dirs, other.Dirs...)
+}
+
+func (i Import) Applies(goos, goarch string) bool {
+	return matchConstraint(i.OS, goos) && matchConstraint(i.Arch, goarch)
+}
+
+func matchConstraint(values []string, target string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	normalizedTarget := strings.ToLower(strings.TrimSpace(target))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" {
+			continue
+		}
+		if value == normalizedTarget {
+			return true
+		}
+	}
+	return false
 }
 
 func (f File) IsTracked() bool {

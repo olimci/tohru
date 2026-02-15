@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -30,15 +30,15 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("status does not accept arguments")
 	}
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
-	if !store.IsInstalled() {
+	if !s.IsInstalled() {
 		return fmt.Errorf("tohru is not installed")
 	}
 
-	snapshot, err := store.Status()
+	snapshot, err := s.Status()
 	if err != nil {
 		return err
 	}
@@ -64,6 +64,10 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	} else {
 		for _, tracked := range snapshot.Tracked {
 			switch {
+			case tracked.Drifted && tracked.Missing:
+				fmt.Printf("  X  %s\n", tracked.Path)
+			case tracked.Drifted:
+				fmt.Printf("  M  %s\n", tracked.Path)
 			case tracked.PrevDigest == "":
 				fmt.Printf("  T  %s\n", tracked.Path)
 			case tracked.BackupPresent:
@@ -80,7 +84,7 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-func renderBackupStatus(snapshot storepkg.StatusSnapshot) {
+func renderBackupStatus(snapshot store.StatusSnapshot) {
 	fmt.Println("Backups referenced by lock:")
 	if len(snapshot.BackupRefs) == 0 {
 		fmt.Println("  (none)")

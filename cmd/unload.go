@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -17,7 +17,11 @@ func unloadCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:    "force",
 				Aliases: []string{"f"},
-				Usage:   "remove modified managed files",
+				Usage:   "force unload, even with missing/changed paths or restore conflicts",
+			},
+			&cli.BoolFlag{
+				Name:  "discard-changes",
+				Usage: "allow removing modified managed files without enabling full force behavior",
 			},
 		},
 		Action: unloadAction,
@@ -29,18 +33,18 @@ func unloadAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unload does not accept arguments")
 	}
-	force := cmd.Bool("force")
+	opts := applyOptionsFromCommand(cmd)
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	if !store.IsInstalled() {
+	if !s.IsInstalled() {
 		return fmt.Errorf("tohru is not installed")
 	}
 
-	lck, err := store.LoadLock()
+	lck, err := s.LoadLock()
 	if err != nil {
 		return err
 	}
@@ -49,7 +53,7 @@ func unloadAction(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	res, err := store.Unload(force)
+	res, err := s.Unload(opts)
 	if err != nil {
 		return err
 	}

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -14,6 +14,13 @@ func installCommand() *cli.Command {
 		Usage:     "initialize tohru",
 		ArgsUsage: "[source]",
 		Action:    installAction,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:    "force",
+				Aliases: []string{"f"},
+				Usage:   "force installation even if tohru is already installed",
+			},
+		},
 	}
 }
 
@@ -27,28 +34,29 @@ func installAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) == 1 {
 		source = args[0]
 	}
+	opts := applyOptionsFromCommand(cmd)
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	if store.IsInstalled() {
-		return fmt.Errorf("tohru is already installed in %s", store.Root)
+	if s.IsInstalled() {
+		return fmt.Errorf("tohru is already installed in %s", s.Root)
 	}
 
-	if err := store.Install(); err != nil {
+	if err := s.Install(); err != nil {
 		return err
 	}
 
-	fmt.Printf("initialized tohru store in %s\n", store.Root)
-	printChangedPaths(cmd, []string{store.BackupsPath(), store.ConfigPath(), store.LockPath()})
+	fmt.Printf("initialized tohru store in %s\n", s.Root)
+	printChangedPaths(cmd, []string{s.BackupsPath(), s.ConfigPath(), s.LockPath()})
 
 	if source == "" {
 		return nil
 	}
 
-	res, err := store.Load(source, false)
+	res, err := s.Load(source, opts)
 	if err != nil {
 		return err
 	}

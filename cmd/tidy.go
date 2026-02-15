@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	storepkg "github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/store"
 	"github.com/urfave/cli/v3"
 )
 
@@ -22,16 +22,16 @@ func tidyAction(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("tidy does not accept arguments")
 	}
 
-	store, err := storepkg.DefaultStore()
+	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	if !store.IsInstalled() {
+	if !s.IsInstalled() {
 		return fmt.Errorf("tohru is not installed")
 	}
 
-	res, err := store.Tidy()
+	res, err := s.Tidy()
 	if err != nil {
 		return err
 	}

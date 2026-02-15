@@ -19,6 +19,10 @@ tohru load [path]
 tohru reload
 # unload current source
 tohru unload
+# validate a source manifest without applying
+tohru validate [source]
+# validate and print resolved import tree
+tohru validate --tree [source]
 # see what files are being tracked by tohru
 tohru status
 ```
@@ -31,11 +35,21 @@ dotfiles are defined with a `tohru.toml` file:
 
 ```toml
 [tohru]
-version = "0.0.0"
+version = "0.1.0"
 
 [source]
 name = "my-dotfiles"
 description = "personal setup"
+
+# import shared manifest fragments
+[[import]]
+path = "manifests/base.toml"
+
+# import only on matching platform
+[[import]]
+path = "manifests/darwin.toml"
+os = ["darwin"]
+arch = ["arm64"]
 
 # create a symlink
 [[link]]
