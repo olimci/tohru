@@ -11,8 +11,8 @@ go install github.com/olimci/tohru
 ## Usage
 
 ```bash
-# install application files
-tohru install
+# install application files (optionally load a source immediately)
+tohru install [source]
 # load some dotfiles
 tohru load [path]
 # reload current source
@@ -23,7 +23,7 @@ tohru unload
 tohru status
 ```
 
-tohru will automatically take backups of files that might be clobbered, and will automatically restore them once the current source is unloaded.
+tohru will automatically take backups of files that might be clobbered, and will automatically restore them once the conflicting source is unloaded. this behaviour is configurable in config.
 
 ## Manifest
 
@@ -39,16 +39,16 @@ description = "personal setup"
 
 # create a symlink
 [[link]]
-from = "~/.zshrc"
 to = "zshrc"
+from = "~/.zshrc"
 
 # copy a file
 [[file]]
-from = "gitconfig"
-to = "~/.gitconfig"
+source = "gitconfig"
+dest = "~/.gitconfig"
 
 # create a dir
 [[dir]]
-to = "~/.config/nvim"
+path = "~/.config/nvim"
 tracked = false # disable tracking for dir
 ```

@@ -12,6 +12,7 @@ type Manifest struct {
 	State string `json:"state"` // unloaded|loaded
 	Kind  string `json:"kind"`  // local (remote might be added later)
 	Loc   string `json:"loc"`   // path to manifest directory
+	Name  string `json:"name,omitempty"`
 }
 
 // File represents a managed object, ie one that the application created and is tracking

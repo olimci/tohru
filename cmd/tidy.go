@@ -31,11 +31,12 @@ func tidyAction(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("tohru is not installed")
 	}
 
-	removed, err := store.Tidy()
+	res, err := store.Tidy()
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("tidied backups (%d object(s) removed)\n", removed)
+	fmt.Printf("tidied backups (%d object(s) removed)\n", res.RemovedCount)
+	printChangedPaths(cmd, res.ChangedPaths)
 	return nil
 }

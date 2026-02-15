@@ -40,13 +40,26 @@ func uninstallAction(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("tohru is not installed")
 	}
 
-	if _, err := store.Unload(force); err != nil {
+	unloadRes, err := store.Unload(force)
+	if err != nil {
 		return err
 	}
+	if unloadRes.SourceName != "" || unloadRes.RemovedCount > 0 {
+		name := unloadRes.SourceName
+		if name == "" {
+			name = "source"
+		}
+		fmt.Printf("unloaded %s (%d managed object(s))\n", name, unloadRes.RemovedCount)
+	}
+	if unloadRes.RemovedBackupCount > 0 {
+		fmt.Printf("cleaned %d unreferenced backup object(s)\n", unloadRes.RemovedBackupCount)
+	}
+	printChangedPaths(cmd, unloadRes.ChangedPaths)
 
 	if err := store.Uninstall(); err != nil {
 		return err
 	}
+	printChangedPaths(cmd, []string{store.Root})
 
 	fmt.Printf("uninstalled tohru store from %s\n", store.Root)
 	return nil

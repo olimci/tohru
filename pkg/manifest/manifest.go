@@ -21,14 +21,14 @@ type Source struct {
 
 type Link struct {
 	// Link is a symbolic link from somewhere else to something here
-	From string `toml:"from"`
 	To   string `toml:"to"`
+	From string `toml:"from"`
 }
 
 type File struct {
 	// File is a copy of a file from somewhere here to somewhere else
-	From    string `toml:"from"`
-	To      string `toml:"to"`
+	Source  string `toml:"source"`
+	Dest    string `toml:"dest"`
 	Tracked *bool  `toml:"tracked,omitempty"` // nil defaults to true
 
 	tracked    bool `toml:"-"`
@@ -37,7 +37,7 @@ type File struct {
 
 type Dir struct {
 	// Dirs don't need a source
-	To      string `toml:"to"`
+	Path    string `toml:"path"`
 	Tracked *bool  `toml:"tracked,omitempty"` // nil defaults to true
 
 	tracked    bool `toml:"-"`

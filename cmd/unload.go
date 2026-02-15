@@ -49,11 +49,19 @@ func unloadAction(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	removed, err := store.Unload(force)
+	res, err := store.Unload(force)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("unloaded source (%d managed object(s))\n", removed)
+	name := res.SourceName
+	if name == "" {
+		name = "source"
+	}
+	fmt.Printf("unloaded %s (%d managed object(s))\n", name, res.RemovedCount)
+	if res.RemovedBackupCount > 0 {
+		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
+	}
+	printChangedPaths(cmd, res.ChangedPaths)
 	return nil
 }

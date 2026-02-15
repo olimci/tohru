@@ -40,12 +40,15 @@ func TestTidyRemovesOnlyUnreferencedBackups(t *testing.T) {
 		t.Fatalf("SaveLock returned error: %v", err)
 	}
 
-	removed, err := store.Tidy()
+	res, err := store.Tidy()
 	if err != nil {
 		t.Fatalf("Tidy returned error: %v", err)
 	}
-	if removed != 1 {
-		t.Fatalf("Tidy removed %d backup(s), want 1", removed)
+	if res.RemovedCount != 1 {
+		t.Fatalf("Tidy removed %d backup(s), want 1", res.RemovedCount)
+	}
+	if len(res.ChangedPaths) != 1 || res.ChangedPaths[0] != filepath.Dir(unreferencedPath) {
+		t.Fatalf("unexpected changed paths: %#v", res.ChangedPaths)
 	}
 
 	if _, err := os.Stat(referencedPath); err != nil {
@@ -80,12 +83,15 @@ func TestTidyPurgesBackupsWhenAutomaticCleanIsDisabled(t *testing.T) {
 		t.Fatalf("backup should remain when options.clean=false, stat returned: %v", err)
 	}
 
-	removed, err := store.Tidy()
+	res, err := store.Tidy()
 	if err != nil {
 		t.Fatalf("Tidy returned error: %v", err)
 	}
-	if removed != 1 {
-		t.Fatalf("Tidy removed %d backup(s), want 1", removed)
+	if res.RemovedCount != 1 {
+		t.Fatalf("Tidy removed %d backup(s), want 1", res.RemovedCount)
+	}
+	if len(res.ChangedPaths) != 1 || res.ChangedPaths[0] != filepath.Dir(backupPath) {
+		t.Fatalf("unexpected changed paths: %#v", res.ChangedPaths)
 	}
 	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
 		t.Fatalf("backup should be removed by tidy, stat err = %v", err)
@@ -151,6 +157,38 @@ description = "example source"
 	}
 	if lck.Manifest.State != "unloaded" {
 		t.Fatalf("lock state changed on failed load: got %q, want unloaded", lck.Manifest.State)
+	}
+}
+
+func TestLoadRejectsSourcePathOutsideRoot(t *testing.T) {
+	t.Parallel()
+
+	store := testInstalledStore(t)
+	sourceDir := t.TempDir()
+	destDir := t.TempDir()
+
+	manifest := fmt.Sprintf(`[tohru]
+version = "%s"
+
+[source]
+name = "example"
+description = "example source"
+
+[[file]]
+source = "../outside"
+dest = %q
+`, version.Version, filepath.Join(destDir, "managed"))
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "tohru.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	_, err := store.Load(sourceDir, false)
+	if err == nil {
+		t.Fatal("expected Load to reject source path escaping source root")
+	}
+	if !strings.Contains(err.Error(), "path escapes source root") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -253,6 +291,72 @@ func TestStatusIncludesBrokenBackups(t *testing.T) {
 	}
 }
 
+func TestLoadReportsSourceNamesAndUnloadedSource(t *testing.T) {
+	t.Parallel()
+
+	store := testInstalledStore(t)
+	targetRoot := t.TempDir()
+
+	alphaSource := writeSourceManifest(t, "alpha", filepath.Join(targetRoot, "alpha-managed"))
+	betaSource := writeSourceManifest(t, "beta", filepath.Join(targetRoot, "beta-managed"))
+
+	first, err := store.Load(alphaSource, false)
+	if err != nil {
+		t.Fatalf("Load alpha returned error: %v", err)
+	}
+	if first.SourceName != "alpha" {
+		t.Fatalf("first SourceName = %q, want alpha", first.SourceName)
+	}
+	if first.UnloadedSourceName != "" || first.UnloadedTrackedCount != 0 {
+		t.Fatalf("first unload details = (%q, %d), want empty", first.UnloadedSourceName, first.UnloadedTrackedCount)
+	}
+
+	second, err := store.Load(betaSource, false)
+	if err != nil {
+		t.Fatalf("Load beta returned error: %v", err)
+	}
+	if second.SourceName != "beta" {
+		t.Fatalf("second SourceName = %q, want beta", second.SourceName)
+	}
+	if second.UnloadedSourceName != "alpha" {
+		t.Fatalf("second UnloadedSourceName = %q, want alpha", second.UnloadedSourceName)
+	}
+	if second.UnloadedTrackedCount != 1 {
+		t.Fatalf("second UnloadedTrackedCount = %d, want 1", second.UnloadedTrackedCount)
+	}
+
+	lck, err := store.LoadLock()
+	if err != nil {
+		t.Fatalf("LoadLock returned error: %v", err)
+	}
+	if lck.Manifest.Name != "beta" {
+		t.Fatalf("Lock manifest name = %q, want beta", lck.Manifest.Name)
+	}
+}
+
+func TestUnloadReportsLoadedSourceName(t *testing.T) {
+	t.Parallel()
+
+	store := testInstalledStore(t)
+	targetRoot := t.TempDir()
+	source := writeSourceManifest(t, "named-source", filepath.Join(targetRoot, "managed"))
+
+	if _, err := store.Load(source, false); err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+
+	res, err := store.Unload(false)
+	if err != nil {
+		t.Fatalf("Unload returned error: %v", err)
+	}
+	if res.SourceName != "named-source" {
+		t.Fatalf("Unload SourceName = %q, want named-source", res.SourceName)
+	}
+	if res.RemovedCount != 1 {
+		t.Fatalf("Unload RemovedCount = %d, want 1", res.RemovedCount)
+	}
+}
+
 func testInstalledStore(t *testing.T) Store {
 	t.Helper()
 
@@ -274,6 +378,27 @@ func writeBackupObject(t *testing.T, store Store, cid string) string {
 		t.Fatalf("write backup object: %v", err)
 	}
 	return path
+}
+
+func writeSourceManifest(t *testing.T, name, managedPath string) string {
+	t.Helper()
+
+	sourceDir := t.TempDir()
+	manifestContent := fmt.Sprintf(`[tohru]
+version = "%s"
+
+[source]
+name = %q
+description = "test source"
+
+[[dir]]
+path = %q
+`, version.Version, name, managedPath)
+
+	if err := os.WriteFile(filepath.Join(sourceDir, "tohru.toml"), []byte(manifestContent), 0o644); err != nil {
+		t.Fatalf("write source manifest: %v", err)
+	}
+	return sourceDir
 }
 
 func incompatibleVersion(t *testing.T) string {

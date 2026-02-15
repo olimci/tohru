@@ -15,11 +15,11 @@ func TestLoadTrackedDefaultsToTrueWhenOmitted(t *testing.T) {
 name = "example"
 
 [[file]]
-from = "a"
-to = "b"
+source = "a"
+dest = "b"
 
 [[dir]]
-to = "c"
+path = "c"
 `)
 
 	m, _, err := Load(manifestPath)
@@ -46,12 +46,12 @@ func TestLoadHonorsTrackedValue(t *testing.T) {
 name = "example"
 
 [[file]]
-from = "a"
-to = "b"
+source = "a"
+dest = "b"
 tracked = false
 
 [[dir]]
-to = "c"
+path = "c"
 tracked = false
 `)
 

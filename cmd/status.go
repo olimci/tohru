@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	storepkg "github.com/olimci/tohru/pkg/store"
@@ -11,8 +12,14 @@ import (
 
 func statusCommand() *cli.Command {
 	return &cli.Command{
-		Name:   "status",
-		Usage:  "show tracked objects",
+		Name:  "status",
+		Usage: "show tracked objects",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "backups",
+				Usage: "show backups-only status details",
+			},
+		},
 		Action: statusAction,
 	}
 }
@@ -35,10 +42,16 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
+	backupsOnly := cmd.Bool("backups")
+
+	if backupsOnly {
+		renderBackupStatus(snapshot)
+		return nil
+	}
 
 	manifestState := strings.ToLower(snapshot.Manifest.State)
 	if manifestState == "loaded" && strings.TrimSpace(snapshot.Manifest.Loc) != "" {
-		fmt.Printf("On source %s\n", snapshot.Manifest.Loc)
+		fmt.Printf("On source %s\n", sourceLabel(snapshot.Manifest.Name, snapshot.Manifest.Loc))
 	} else {
 		fmt.Println("No source loaded")
 	}
@@ -62,6 +75,12 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	}
 
 	fmt.Println()
+	renderBackupStatus(snapshot)
+
+	return nil
+}
+
+func renderBackupStatus(snapshot storepkg.StatusSnapshot) {
 	fmt.Println("Backups referenced by lock:")
 	if len(snapshot.BackupRefs) == 0 {
 		fmt.Println("  (none)")
@@ -95,6 +114,16 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 			fmt.Printf("  broken  %s\n", cid)
 		}
 	}
+}
 
-	return nil
+func sourceLabel(name, loc string) string {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName != "" {
+		return trimmedName
+	}
+	trimmedLoc := strings.TrimSpace(loc)
+	if trimmedLoc == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Clean(trimmedLoc))
 }

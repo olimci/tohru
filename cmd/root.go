@@ -34,6 +34,12 @@ func Execute(ctx context.Context, args []string) error {
 		Name:    "tohru",
 		Usage:   "a simple dotfiles manager",
 		Version: version.Version,
+		Flags: []cli.Flag{
+			&cli.BoolFlag{
+				Name:  "verbose",
+				Usage: "show changed filesystem paths",
+			},
+		},
 		Commands: []*cli.Command{
 			installCommand(),
 			loadCommand(),

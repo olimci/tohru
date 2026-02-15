@@ -45,6 +45,18 @@ func reloadAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	fmt.Printf("reloaded %s (%d tracked object(s))\n", res.SourceDir, res.TrackedCount)
+	if res.UnloadedSourceName != "" || res.UnloadedTrackedCount > 0 {
+		name := res.UnloadedSourceName
+		if name == "" {
+			name = "current source"
+		}
+		fmt.Printf("unloaded %s (%d managed object(s))\n", name, res.UnloadedTrackedCount)
+	}
+
+	fmt.Printf("reloaded %s (%d tracked object(s))\n", res.SourceName, res.TrackedCount)
+	if res.RemovedBackupCount > 0 {
+		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
+	}
+	printChangedPaths(cmd, res.ChangedPaths)
 	return nil
 }
