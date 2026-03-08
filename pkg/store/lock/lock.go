@@ -12,7 +12,15 @@ type Manifest struct {
 	State string `json:"state"` // unloaded|loaded
 	Kind  string `json:"kind"`  // local (remote might be added later)
 	Loc   string `json:"loc"`   // path to manifest directory
+	Slug  string `json:"slug,omitempty"`
 	Name  string `json:"name,omitempty"`
+}
+
+// Profile is a cached profile entry used in profiles.json.
+type Profile struct {
+	Slug string `json:"slug"`
+	Name string `json:"name,omitempty"`
+	Loc  string `json:"loc"`
 }
 
 // File represents a managed object, ie one that the application created and is tracking

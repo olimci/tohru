@@ -14,12 +14,14 @@ import (
 )
 
 const (
-	dirName     = "tohru"
-	configFile  = "config.toml"
-	lockFile    = "lock.json"
-	backupsDir  = "backups"
-	defaultKind = "local"
-	envStoreDir = "TOHRU_STORE_DIR"
+	dirName      = ".tohru"
+	configFile   = "config.toml"
+	lockFile     = "lock.json"
+	backupsDir   = "backups"
+	profilesDir  = "profiles"
+	profilesFile = "profiles.json"
+	defaultKind  = "local"
+	envStoreDir  = "TOHRU_STORE_DIR"
 )
 
 var (
@@ -41,12 +43,12 @@ func DefaultStore() (Store, error) {
 		return Store{Root: absRoot}, nil
 	}
 
-	cfgDir, err := os.UserConfigDir()
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return Store{}, fmt.Errorf("resolve user config directory: %w", err)
+		return Store{}, fmt.Errorf("resolve user home directory: %w", err)
 	}
 
-	return Store{Root: filepath.Join(cfgDir, dirName)}, nil
+	return Store{Root: filepath.Join(homeDir, dirName)}, nil
 }
 
 func (s Store) ConfigPath() string {
@@ -59,6 +61,14 @@ func (s Store) LockPath() string {
 
 func (s Store) BackupsPath() string {
 	return filepath.Join(s.Root, backupsDir)
+}
+
+func (s Store) ProfilesPath() string {
+	return filepath.Join(s.Root, profilesDir)
+}
+
+func (s Store) ProfilesFilePath() string {
+	return filepath.Join(s.Root, profilesFile)
 }
 
 func (s Store) IsInstalled() bool {
@@ -116,6 +126,9 @@ func (s Store) installMissing() (bool, error) {
 	if err := os.MkdirAll(s.BackupsPath(), 0o755); err != nil {
 		return false, fmt.Errorf("create store directories: %w", err)
 	}
+	if err := os.MkdirAll(s.ProfilesPath(), 0o755); err != nil {
+		return false, fmt.Errorf("create store directories: %w", err)
+	}
 
 	var changed bool
 
@@ -132,6 +145,14 @@ func (s Store) installMissing() (bool, error) {
 		return false, err
 	}
 	if createdLock {
+		changed = true
+	}
+
+	createdProfiles, err := ensureDefaultProfiles(s)
+	if err != nil {
+		return false, err
+	}
+	if createdProfiles {
 		changed = true
 	}
 
@@ -197,4 +218,26 @@ func (s Store) SaveLock(lck lock.Lock) error {
 	}
 
 	return writeJSON(s.LockPath(), lck)
+}
+
+func (s Store) LoadProfiles() (map[string]lock.Profile, error) {
+	profiles := map[string]lock.Profile{}
+	if _, err := os.Stat(s.ProfilesFilePath()); err == nil {
+		if err := decodeJSONFile(s.ProfilesFilePath(), &profiles); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", s.ProfilesFilePath(), err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("stat %s: %w", s.ProfilesFilePath(), err)
+	}
+	if profiles == nil {
+		profiles = map[string]lock.Profile{}
+	}
+	return profiles, nil
+}
+
+func (s Store) SaveProfiles(profiles map[string]lock.Profile) error {
+	if profiles == nil {
+		profiles = map[string]lock.Profile{}
+	}
+	return writeJSON(s.ProfilesFilePath(), profiles)
 }

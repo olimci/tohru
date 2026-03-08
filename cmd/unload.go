@@ -12,7 +12,7 @@ import (
 func unloadCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "unload",
-		Usage: "unload the currently loaded source",
+		Usage: "unload the currently loaded profile",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "force",
@@ -33,7 +33,7 @@ func unloadAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 0 {
 		return fmt.Errorf("unload does not accept arguments")
 	}
-	opts := applyOptionsFromCommand(cmd)
+	opts := cmdOptions(cmd)
 
 	s, err := store.DefaultStore()
 	if err != nil {
@@ -58,14 +58,14 @@ func unloadAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	name := res.SourceName
+	name := res.ProfileName
 	if name == "" {
-		name = "source"
+		name = "profile"
 	}
 	fmt.Printf("unloaded %s (%d managed object(s))\n", name, res.RemovedCount)
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
-	printChangedPaths(cmd, res.ChangedPaths)
+	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

@@ -7,7 +7,7 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func applyOptionsFromCommand(cmd *cli.Command) store.Options {
+func cmdOptions(cmd *cli.Command) store.Options {
 	if cmd == nil {
 		return store.Options{}
 	}
@@ -17,7 +17,7 @@ func applyOptionsFromCommand(cmd *cli.Command) store.Options {
 	}
 }
 
-func isVerbose(cmd *cli.Command) bool {
+func verbose(cmd *cli.Command) bool {
 	if cmd == nil {
 		return false
 	}
@@ -28,8 +28,8 @@ func isVerbose(cmd *cli.Command) bool {
 	return root != nil && root.Bool("verbose")
 }
 
-func printChangedPaths(cmd *cli.Command, paths []string) {
-	if !isVerbose(cmd) || len(paths) == 0 {
+func printChanges(cmd *cli.Command, paths []string) {
+	if !verbose(cmd) || len(paths) == 0 {
 		return
 	}
 	fmt.Println("changed paths:")

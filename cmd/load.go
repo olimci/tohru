@@ -12,8 +12,8 @@ func loadCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "load",
 		Aliases:   []string{"switch"},
-		Usage:     "load a source",
-		ArgsUsage: "<source>",
+		Usage:     "load a profile",
+		ArgsUsage: "<profile>",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "force",
@@ -31,39 +31,39 @@ func loadCommand() *cli.Command {
 
 func loadAction(_ context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
-	source := cmd.Args().First()
+	profile := cmd.Args().First()
 
-	if source == "" {
-		return fmt.Errorf("load requires a source argument")
+	if profile == "" {
+		return fmt.Errorf("load requires a profile argument")
 	}
 
 	if len(args) > 1 {
-		return fmt.Errorf("load accepts exactly one source argument")
+		return fmt.Errorf("load accepts exactly one profile argument")
 	}
-	opts := applyOptionsFromCommand(cmd)
+	opts := cmdOptions(cmd)
 
 	s, err := store.DefaultStore()
 	if err != nil {
 		return err
 	}
 
-	res, err := s.Load(source, opts)
+	res, err := s.Load(profile, opts)
 	if err != nil {
 		return err
 	}
 
-	if res.UnloadedSourceName != "" || res.UnloadedTrackedCount > 0 {
-		name := res.UnloadedSourceName
+	if res.UnloadedProfileName != "" || res.UnloadedTrackedCount > 0 {
+		name := res.UnloadedProfileName
 		if name == "" {
-			name = "previous source"
+			name = "previous profile"
 		}
 		fmt.Printf("unloaded %s (%d managed object(s))\n", name, res.UnloadedTrackedCount)
 	}
 
-	fmt.Printf("loaded %s (%d tracked object(s))\n", res.SourceName, res.TrackedCount)
+	fmt.Printf("loaded %s (%d tracked object(s))\n", res.ProfileName, res.TrackedCount)
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
-	printChangedPaths(cmd, res.ChangedPaths)
+	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

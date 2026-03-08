@@ -12,7 +12,7 @@ func installCommand() *cli.Command {
 	return &cli.Command{
 		Name:      "install",
 		Usage:     "initialize tohru",
-		ArgsUsage: "[source]",
+		ArgsUsage: "[profile]",
 		Action:    installAction,
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
@@ -26,15 +26,15 @@ func installCommand() *cli.Command {
 
 func installAction(_ context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
-	source := ""
+	profile := ""
 
 	if len(args) > 1 {
-		return fmt.Errorf("install accepts at most one optional source argument")
+		return fmt.Errorf("install accepts at most one optional profile argument")
 	}
 	if len(args) == 1 {
-		source = args[0]
+		profile = args[0]
 	}
-	opts := applyOptionsFromCommand(cmd)
+	opts := cmdOptions(cmd)
 
 	s, err := store.DefaultStore()
 	if err != nil {
@@ -50,28 +50,28 @@ func installAction(_ context.Context, cmd *cli.Command) error {
 	}
 
 	fmt.Printf("initialized tohru store in %s\n", s.Root)
-	printChangedPaths(cmd, []string{s.BackupsPath(), s.ConfigPath(), s.LockPath()})
+	printChanges(cmd, []string{s.BackupsPath(), s.ProfilesPath(), s.ConfigPath(), s.LockPath(), s.ProfilesFilePath()})
 
-	if source == "" {
+	if profile == "" {
 		return nil
 	}
 
-	res, err := s.Load(source, opts)
+	res, err := s.Load(profile, opts)
 	if err != nil {
 		return err
 	}
 
-	if res.UnloadedSourceName != "" || res.UnloadedTrackedCount > 0 {
-		name := res.UnloadedSourceName
+	if res.UnloadedProfileName != "" || res.UnloadedTrackedCount > 0 {
+		name := res.UnloadedProfileName
 		if name == "" {
-			name = "previous source"
+			name = "previous profile"
 		}
 		fmt.Printf("unloaded %s (%d managed object(s))\n", name, res.UnloadedTrackedCount)
 	}
-	fmt.Printf("loaded %s (%d tracked object(s))\n", res.SourceName, res.TrackedCount)
+	fmt.Printf("loaded %s (%d tracked object(s))\n", res.ProfileName, res.TrackedCount)
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
-	printChangedPaths(cmd, res.ChangedPaths)
+	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

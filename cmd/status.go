@@ -45,15 +45,15 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	backups := cmd.Bool("backups")
 
 	if backups {
-		renderBackupStatus(snapshot)
+		printBackups(snapshot)
 		return nil
 	}
 
 	manifestState := strings.ToLower(snapshot.Manifest.State)
 	if manifestState == "loaded" && strings.TrimSpace(snapshot.Manifest.Loc) != "" {
-		fmt.Printf("On source %s\n", sourceLabel(snapshot.Manifest.Name, snapshot.Manifest.Loc))
+		fmt.Printf("On profile %s\n", displayProfile(snapshot.Manifest.Slug, snapshot.Manifest.Name, snapshot.Manifest.Loc))
 	} else {
-		fmt.Println("No source loaded")
+		fmt.Println("No profile loaded")
 	}
 
 	fmt.Println()
@@ -80,7 +80,7 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-func renderBackupStatus(snapshot store.StatusSnapshot) {
+func printBackups(snapshot store.StatusSnapshot) {
 	fmt.Println("Backups referenced by lock:")
 	if len(snapshot.BackupRefs) == 0 {
 		fmt.Println("  (none)")
@@ -116,10 +116,14 @@ func renderBackupStatus(snapshot store.StatusSnapshot) {
 	}
 }
 
-func sourceLabel(name, loc string) string {
+func displayProfile(slug, name, loc string) string {
 	trimmedName := strings.TrimSpace(name)
 	if trimmedName != "" {
 		return trimmedName
+	}
+	trimmedSlug := strings.TrimSpace(slug)
+	if trimmedSlug != "" {
+		return trimmedSlug
 	}
 	trimmedLoc := strings.TrimSpace(loc)
 	if trimmedLoc == "" {

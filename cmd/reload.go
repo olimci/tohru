@@ -11,7 +11,7 @@ import (
 func reloadCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "reload",
-		Usage: "reload the currently loaded source",
+		Usage: "reload the currently loaded profile",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:    "force",
@@ -33,7 +33,7 @@ func reloadAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 0 {
 		return fmt.Errorf("reload does not accept arguments")
 	}
-	opts := applyOptionsFromCommand(cmd)
+	opts := cmdOptions(cmd)
 
 	s, err := store.DefaultStore()
 	if err != nil {
@@ -49,18 +49,18 @@ func reloadAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if res.UnloadedSourceName != "" || res.UnloadedTrackedCount > 0 {
-		name := res.UnloadedSourceName
+	if res.UnloadedProfileName != "" || res.UnloadedTrackedCount > 0 {
+		name := res.UnloadedProfileName
 		if name == "" {
-			name = "current source"
+			name = "current profile"
 		}
 		fmt.Printf("unloaded %s (%d managed object(s))\n", name, res.UnloadedTrackedCount)
 	}
 
-	fmt.Printf("reloaded %s (%d tracked object(s))\n", res.SourceName, res.TrackedCount)
+	fmt.Printf("reloaded %s (%d tracked object(s))\n", res.ProfileName, res.TrackedCount)
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
-	printChangedPaths(cmd, res.ChangedPaths)
+	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

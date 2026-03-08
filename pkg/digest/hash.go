@@ -18,10 +18,10 @@ func ForPath(path string) (Digest, error) {
 		return Digest{}, err
 	}
 
-	return forPathWithInfo(path, info)
+	return digestWithInfo(path, info)
 }
 
-func forPathWithInfo(path string, info os.FileInfo) (Digest, error) {
+func digestWithInfo(path string, info os.FileInfo) (Digest, error) {
 	mode := info.Mode()
 
 	switch {

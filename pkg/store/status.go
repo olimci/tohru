@@ -58,7 +58,7 @@ func (s Store) Status() (StatusSnapshot, error) {
 
 		item := TrackedStatus{Path: path}
 
-		current, exists, snapshotErr := snapshotObjectIfExists(path)
+		current, exists, snapshotErr := snapshotIfExists(path)
 		if snapshotErr != nil {
 			return StatusSnapshot{}, fmt.Errorf("snapshot tracked path %s: %w", path, snapshotErr)
 		}
@@ -146,7 +146,7 @@ func scanBackupStore(store Store) (map[string]struct{}, []string, error) {
 	broken := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		cid := entry.Name()
-		path := backupObjectPath(store, cid)
+		path := backupObjPath(store, cid)
 		if _, statErr := os.Lstat(path); statErr == nil {
 			available[cid] = struct{}{}
 			continue

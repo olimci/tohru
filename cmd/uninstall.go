@@ -33,7 +33,7 @@ func uninstallAction(_ context.Context, cmd *cli.Command) error {
 	if len(args) > 0 {
 		return fmt.Errorf("uninstall does not accept arguments")
 	}
-	opts := applyOptionsFromCommand(cmd)
+	opts := cmdOptions(cmd)
 
 	s, err := store.DefaultStore()
 	if err != nil {
@@ -48,22 +48,22 @@ func uninstallAction(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if unloadRes.SourceName != "" || unloadRes.RemovedCount > 0 {
-		name := unloadRes.SourceName
+	if unloadRes.ProfileName != "" || unloadRes.RemovedCount > 0 {
+		name := unloadRes.ProfileName
 		if name == "" {
-			name = "source"
+			name = "profile"
 		}
 		fmt.Printf("unloaded %s (%d managed object(s))\n", name, unloadRes.RemovedCount)
 	}
 	if unloadRes.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", unloadRes.RemovedBackupCount)
 	}
-	printChangedPaths(cmd, unloadRes.ChangedPaths)
+	printChanges(cmd, unloadRes.ChangedPaths)
 
 	if err := s.Uninstall(); err != nil {
 		return err
 	}
-	printChangedPaths(cmd, []string{s.Root})
+	printChanges(cmd, []string{s.Root})
 
 	fmt.Printf("uninstalled tohru store from %s\n", s.Root)
 	return nil

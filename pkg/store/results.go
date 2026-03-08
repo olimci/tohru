@@ -1,17 +1,17 @@
 package store
 
 type LoadResult struct {
-	SourceDir            string
-	SourceName           string
+	ProfileDir           string
+	ProfileName          string
 	TrackedCount         int
-	UnloadedSourceName   string
+	UnloadedProfileName  string
 	UnloadedTrackedCount int
 	RemovedBackupCount   int
 	ChangedPaths         []string
 }
 
 type UnloadResult struct {
-	SourceName         string
+	ProfileName        string
 	RemovedCount       int
 	RemovedBackupCount int
 	ChangedPaths       []string

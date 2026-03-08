@@ -36,6 +36,19 @@ func ensureDefaultLock(s Store) (bool, error) {
 	return true, nil
 }
 
+func ensureDefaultProfiles(s Store) (bool, error) {
+	if _, err := os.Stat(s.ProfilesFilePath()); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", s.ProfilesFilePath(), err)
+	}
+
+	if err := writeJSON(s.ProfilesFilePath(), map[string]any{}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func writeTOML(path string, value any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create directory for %s: %w", path, err)

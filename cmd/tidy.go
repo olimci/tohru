@@ -37,6 +37,6 @@ func tidyAction(_ context.Context, cmd *cli.Command) error {
 	}
 
 	fmt.Printf("tidied backups (%d object(s) removed)\n", res.RemovedCount)
-	printChangedPaths(cmd, res.ChangedPaths)
+	printChanges(cmd, res.ChangedPaths)
 	return nil
 }
