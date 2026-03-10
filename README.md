@@ -35,35 +35,38 @@ tohru will automatically take backups of files that might be clobbered, and will
 
 ## Manifest
 
-dotfiles are defined with a `tohru.toml` file:
+dotfiles are defined with a `tohru.json` file:
 
-```toml
-[tohru]
-version = "0.2.0"
+```json
+{
+  "tohru": {
+    "version": "0.2.0"
+  },
+  "profile": {
+    "slug": "my-dotfiles",
+    "name": "my-dotfiles",
+    "description": "personal setup"
+  },
 
-[profile]
-slug = "my-dotfiles"
-name = "my-dotfiles"
-description = "personal setup"
-
-# tree of managed paths:
-# - source: root inside the dotfiles repo
-# - dest: root on the local machine
-[[tree]]
-source = "home"
-dest = "~"
-
-[tree.files]
-".zshrc" = { mode = "copy" }
-
-[tree.files.".config".kitty]
-"kitty.conf" = { mode = "link" }
-"theme.conf" = { mode = "link" }
-"kitty.app.png" = { mode = "copy", tracked = false }
-
-# explicit directory
-[tree.files.".config".nvim]
-"after" = { kind = "dir", tracked = false }
+  "trees": {
+    "home": {
+      "dest": "~",
+      "files": {
+        ".zshrc": { "mode": "copy" },
+        ".config": {
+          "kitty": {
+            "kitty.conf": { "mode": "link" },
+            "theme.conf": { "mode": "link" },
+            "kitty.app.png": { "mode": "copy", "tracked": false }
+          },
+          "nvim": {
+            "after": { "kind": "dir", "tracked": false }
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
 In profile source trees, hidden path segments are encoded with a `dot_` prefix (for example, `.config/nvim` is stored as `dot_config/nvim`).

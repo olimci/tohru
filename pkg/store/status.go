@@ -3,16 +3,17 @@ package store
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/olimci/tohru/pkg/digest"
-	"github.com/olimci/tohru/pkg/store/lock"
+	"github.com/olimci/tohru/pkg/store/state"
 )
 
 type StatusSnapshot struct {
-	Manifest        lock.Manifest
+	Manifest        state.Manifest
 	Tracked         []TrackedStatus
 	BackupRefs      []BackupRefStatus
 	OrphanedBackups []string
@@ -38,7 +39,7 @@ func (s Store) Status() (StatusSnapshot, error) {
 		return StatusSnapshot{}, ErrNotInstalled
 	}
 
-	lck, err := s.LoadLock()
+	lck, err := s.LoadState()
 	if err != nil {
 		return StatusSnapshot{}, err
 	}
@@ -58,15 +59,15 @@ func (s Store) Status() (StatusSnapshot, error) {
 
 		item := TrackedStatus{Path: path}
 
-		current, exists, snapshotErr := snapshotIfExists(path)
+		current, exists, snapshotErr := maybeSnapshot(path)
 		if snapshotErr != nil {
 			return StatusSnapshot{}, fmt.Errorf("snapshot tracked path %s: %w", path, snapshotErr)
 		}
 		if !exists {
 			item.Drifted = true
 			item.Missing = true
-		} else if strings.TrimSpace(f.Curr.Digest) != "" {
-			expectedDigest, parseExpectedErr := digest.Parse(f.Curr.Digest)
+		} else if strings.TrimSpace(f.Current.Digest) != "" {
+			expectedDigest, parseExpectedErr := digest.Parse(f.Current.Digest)
 			if parseExpectedErr != nil {
 				return StatusSnapshot{}, fmt.Errorf("parse tracked digest for %s: %w", f.Path, parseExpectedErr)
 			}
@@ -77,8 +78,8 @@ func (s Store) Status() (StatusSnapshot, error) {
 			item.Drifted = expectedDigest.String() != actualDigest.String()
 		}
 
-		if f.Prev != nil && strings.TrimSpace(f.Prev.Digest) != "" {
-			d, parseErr := digest.Parse(f.Prev.Digest)
+		if f.Previous != nil && strings.TrimSpace(f.Previous.Digest) != "" {
+			d, parseErr := digest.Parse(f.Previous.Digest)
 			if parseErr != nil {
 				return StatusSnapshot{}, fmt.Errorf("parse previous digest for %s: %w", f.Path, parseErr)
 			}
@@ -93,20 +94,14 @@ func (s Store) Status() (StatusSnapshot, error) {
 		tracked = append(tracked, item)
 	}
 
-	sort.Slice(tracked, func(i, j int) bool {
-		return tracked[i].Path < tracked[j].Path
+	slices.SortFunc(tracked, func(a, b TrackedStatus) int {
+		return strings.Compare(a.Path, b.Path)
 	})
 
-	refDigests := make([]string, 0, len(refPaths))
-	for cid := range refPaths {
-		refDigests = append(refDigests, cid)
-	}
-	sort.Strings(refDigests)
-
-	refs := make([]BackupRefStatus, 0, len(refDigests))
-	for _, cid := range refDigests {
-		paths := append([]string(nil), refPaths[cid]...)
-		sort.Strings(paths)
+	refs := make([]BackupRefStatus, 0, len(refPaths))
+	for _, cid := range slices.Sorted(maps.Keys(refPaths)) {
+		paths := slices.Clone(refPaths[cid])
+		slices.Sort(paths)
 		_, present := availableBackups[cid]
 		refs = append(refs, BackupRefStatus{
 			Digest:  cid,
@@ -116,13 +111,12 @@ func (s Store) Status() (StatusSnapshot, error) {
 	}
 
 	orphaned := make([]string, 0, len(availableBackups))
-	for cid := range availableBackups {
+	for _, cid := range slices.Sorted(maps.Keys(availableBackups)) {
 		if _, referenced := refPaths[cid]; referenced {
 			continue
 		}
 		orphaned = append(orphaned, cid)
 	}
-	sort.Strings(orphaned)
 
 	return StatusSnapshot{
 		Manifest:        lck.Manifest,
@@ -146,7 +140,7 @@ func scanBackupStore(store Store) (map[string]struct{}, []string, error) {
 	broken := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		cid := entry.Name()
-		path := backupObjPath(store, cid)
+		path := backupPath(store, cid)
 		if _, statErr := os.Lstat(path); statErr == nil {
 			available[cid] = struct{}{}
 			continue
@@ -157,7 +151,7 @@ func scanBackupStore(store Store) (map[string]struct{}, []string, error) {
 			return nil, nil, fmt.Errorf("stat backup object %s: %w", path, statErr)
 		}
 	}
-	sort.Strings(broken)
+	slices.Sort(broken)
 
 	return available, broken, nil
 }

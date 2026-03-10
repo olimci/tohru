@@ -18,7 +18,7 @@ func installCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:    "force",
 				Aliases: []string{"f"},
-				Usage:   "force installation even if tohru is already installed",
+				Usage:   "treat an existing install as success and still process the optional profile",
 			},
 		},
 	}
@@ -41,24 +41,32 @@ func installAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if s.IsInstalled() {
+	alreadyInstalled := s.IsInstalled()
+	if alreadyInstalled && !opts.Force {
 		return fmt.Errorf("tohru is already installed in %s", s.Root)
 	}
 
-	if err := s.Install(); err != nil {
+	var res store.LoadResult
+	switch {
+	case alreadyInstalled && profile != "":
+		res, err = s.Load(profile, opts)
+	case alreadyInstalled:
+		fmt.Printf("tohru is already installed in %s\n", s.Root)
+		return nil
+	default:
+		res, err = s.InstallAndLoad(profile, opts)
+	}
+	if err != nil {
 		return err
 	}
 
-	fmt.Printf("initialized tohru store in %s\n", s.Root)
-	printChanges(cmd, []string{s.BackupsPath(), s.ProfilesPath(), s.ConfigPath(), s.LockPath(), s.ProfilesFilePath()})
+	if !alreadyInstalled {
+		fmt.Printf("initialized tohru store in %s\n", s.Root)
+		printChanges(cmd, []string{s.BackupsPath(), s.ProfilesPath(), s.ConfigPath(), s.StatePath(), s.ProfilesFilePath()})
+	}
 
 	if profile == "" {
 		return nil
-	}
-
-	res, err := s.Load(profile, opts)
-	if err != nil {
-		return err
 	}
 
 	if res.UnloadedProfileName != "" || res.UnloadedTrackedCount > 0 {
@@ -72,6 +80,7 @@ func installAction(_ context.Context, cmd *cli.Command) error {
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
+	printWarnings(res.Warnings)
 	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

@@ -3,18 +3,19 @@ package store
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
-	"unicode"
 
 	"github.com/olimci/tohru/pkg/digest"
 	"github.com/olimci/tohru/pkg/manifest"
 	"github.com/olimci/tohru/pkg/store/config"
-	"github.com/olimci/tohru/pkg/store/lock"
+	"github.com/olimci/tohru/pkg/store/state"
 	"github.com/olimci/tohru/pkg/utils/fileutils"
+	"github.com/olimci/tohru/pkg/utils/profileutils"
 	"github.com/olimci/tohru/pkg/version"
 )
 
@@ -23,16 +24,16 @@ type Options struct {
 	DiscardChanges bool
 }
 
-type manifestOpKind string
+type opKind string
 
 const (
-	opLink manifestOpKind = "link"
-	opFile manifestOpKind = "file"
-	opDir  manifestOpKind = "dir"
+	opLink opKind = "link"
+	opFile opKind = "file"
+	opDir  opKind = "dir"
 )
 
-type manifestOp struct {
-	Kind   manifestOpKind
+type op struct {
+	Kind   opKind
 	Source string
 	Dest   string
 	Track  bool
@@ -49,8 +50,121 @@ type snapshotEntry struct {
 	HadObject bool
 }
 
+var (
+	saveProfilesCache = func(s Store, profiles map[string]state.Profile) error {
+		return s.SaveProfiles(profiles)
+	}
+	pruneBackupsFunc = pruneBackups
+)
+
 func (s Store) Load(profile string, opts Options) (LoadResult, error) {
-	if err := s.EnsureInstalled(); err != nil {
+	var result LoadResult
+	guard, err := s.Lock()
+	if err != nil {
+		return result, err
+	}
+	defer guard.Unlock()
+
+	result, err = s.loadUnlocked(profile, opts)
+	return result, err
+}
+
+func (s Store) Reload(opts Options) (LoadResult, error) {
+	var result LoadResult
+	guard, err := s.Lock()
+	if err != nil {
+		return result, err
+	}
+	defer guard.Unlock()
+
+	result, err = s.reloadUnlocked(opts)
+	return result, err
+}
+
+func (s Store) Unload(opts Options) (UnloadResult, error) {
+	var result UnloadResult
+	guard, err := s.Lock()
+	if err != nil {
+		return result, err
+	}
+	defer guard.Unlock()
+
+	result, err = s.unloadUnlocked(opts)
+	return result, err
+}
+
+func (s Store) Uninstall() error {
+	guard, err := s.Lock()
+	if err != nil {
+		return err
+	}
+	defer guard.Unlock()
+
+	if !s.IsInstalled() {
+		return ErrNotInstalled
+	}
+
+	return fileutils.RemovePath(s.Root)
+}
+
+func (s Store) Tidy() (TidyResult, error) {
+	var result TidyResult
+	guard, err := s.Lock()
+	if err != nil {
+		return result, err
+	}
+	defer guard.Unlock()
+
+	result, err = s.tidyUnlocked()
+	return result, err
+}
+
+func (s Store) InstallAndLoad(profile string, opts Options) (LoadResult, error) {
+	var result LoadResult
+	guard, err := s.Lock()
+	if err != nil {
+		return result, err
+	}
+	defer guard.Unlock()
+
+	if s.IsInstalled() {
+		return result, ErrAlreadyInstalled
+	}
+
+	if _, err := s.installMissing(); err != nil {
+		return result, err
+	}
+	if strings.TrimSpace(profile) == "" {
+		return result, nil
+	}
+
+	cfg, err := s.LoadConfig()
+	if err != nil {
+		return result, err
+	}
+
+	result, err = s.switchProfile(cfg, profile, opts)
+	return result, err
+}
+
+func (s Store) UnloadAndUninstall(opts Options) (UnloadResult, error) {
+	var result UnloadResult
+	guard, err := s.Lock()
+	if err != nil {
+		return result, err
+	}
+	defer guard.Unlock()
+
+	result, err = s.unloadUnlocked(opts)
+	if err != nil {
+		return result, err
+	}
+	err = fileutils.RemovePath(s.Root)
+	return result, err
+}
+
+func (s Store) loadUnlocked(profile string, opts Options) (LoadResult, error) {
+	if _, err := s.installMissing(); err != nil {
 		return LoadResult{}, err
 	}
 
@@ -62,7 +176,7 @@ func (s Store) Load(profile string, opts Options) (LoadResult, error) {
 	return s.switchProfile(cfg, profile, opts)
 }
 
-func (s Store) Reload(opts Options) (LoadResult, error) {
+func (s Store) reloadUnlocked(opts Options) (LoadResult, error) {
 	if !s.IsInstalled() {
 		return LoadResult{}, ErrNotInstalled
 	}
@@ -72,7 +186,7 @@ func (s Store) Reload(opts Options) (LoadResult, error) {
 		return LoadResult{}, err
 	}
 
-	lck, err := s.LoadLock()
+	lck, err := s.LoadState()
 	if err != nil {
 		return LoadResult{}, err
 	}
@@ -90,7 +204,7 @@ func (s Store) Reload(opts Options) (LoadResult, error) {
 	return s.switchProfile(cfg, lck.Manifest.Loc, opts)
 }
 
-func (s Store) Unload(opts Options) (UnloadResult, error) {
+func (s Store) unloadUnlocked(opts Options) (UnloadResult, error) {
 	if !s.IsInstalled() {
 		return UnloadResult{}, ErrNotInstalled
 	}
@@ -100,65 +214,71 @@ func (s Store) Unload(opts Options) (UnloadResult, error) {
 		return UnloadResult{}, err
 	}
 
-	lck, err := s.LoadLock()
+	lck, err := s.LoadState()
 	if err != nil {
 		return UnloadResult{}, err
 	}
 
 	changes := newPathRecorder()
+	snapshot, err := takeSnapshot(s, lck.Files)
+	if err != nil {
+		return UnloadResult{}, err
+	}
+	defer snapshot.Cleanup()
+
+	rollbackOnErr := func(err error) (UnloadResult, error) {
+		if rollbackErr := rollback(s, lck, snapshot, changes.Paths()); rollbackErr != nil {
+			return UnloadResult{}, fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
+		}
+		return UnloadResult{}, fmt.Errorf("%w (rolled back to previous state)", err)
+	}
 
 	if len(lck.Files) > 0 {
 		if err := unloadTracked(s, lck.Files, nil, opts, changes.Add); err != nil {
-			return UnloadResult{}, err
+			return rollbackOnErr(err)
 		}
 	}
-	if err := cleanupAutoDirs(lck.Dirs); err != nil {
-		return UnloadResult{}, err
+	if err := pruneAutoDirs(lck.Dirs, changes.Add); err != nil {
+		return rollbackOnErr(err)
 	}
 
-	newLock := DefaultLock()
-	if err := s.SaveLock(newLock); err != nil {
-		return UnloadResult{}, err
+	newLock := DefaultState()
+	if err := s.SaveState(newLock); err != nil {
+		return rollbackOnErr(err)
 	}
-	changes.Add(s.LockPath())
+	changes.Add(s.StatePath())
 
 	removedBackups := 0
+	warnings := make([]string, 0, 1)
 
 	if cfg.Options.Clean {
-		removedBackups, err = pruneBackups(s, newLock.Files, changes.Add)
+		removedBackups, err = pruneBackupsFunc(s, newLock.Files, changes.Add)
 		if err != nil {
-			return UnloadResult{}, err
+			warnings = append(warnings, fmt.Sprintf("backup cleanup failed: %v", err))
 		}
 	}
 
 	return UnloadResult{
-		ProfileName:        displayProfile(lck.Manifest.Slug, lck.Manifest.Name, lck.Manifest.Loc),
+		ProfileName:        profileutils.DisplayName(lck.Manifest.Slug, lck.Manifest.Name, lck.Manifest.Loc),
 		RemovedCount:       len(lck.Files),
 		RemovedBackupCount: removedBackups,
 		ChangedPaths:       changes.Paths(),
+		Warnings:           warnings,
 	}, nil
 }
 
-func (s Store) Uninstall() error {
-	if !s.IsInstalled() {
-		return ErrNotInstalled
-	}
-
-	return fileutils.RemovePath(s.Root)
-}
-
-func (s Store) Tidy() (TidyResult, error) {
+func (s Store) tidyUnlocked() (TidyResult, error) {
 	if !s.IsInstalled() {
 		return TidyResult{}, ErrNotInstalled
 	}
 
-	lck, err := s.LoadLock()
+	lck, err := s.LoadState()
 	if err != nil {
 		return TidyResult{}, err
 	}
 
 	changes := newPathRecorder()
-	removed, err := pruneBackups(s, lck.Files, changes.Add)
+	removed, err := pruneBackupsFunc(s, lck.Files, changes.Add)
 	if err != nil {
 		return TidyResult{}, err
 	}
@@ -170,7 +290,7 @@ func (s Store) Tidy() (TidyResult, error) {
 }
 
 func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (LoadResult, error) {
-	oldLock, err := s.LoadLock()
+	oldLock, err := s.LoadState()
 	if err != nil {
 		return LoadResult{}, err
 	}
@@ -180,7 +300,7 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 		return LoadResult{}, err
 	}
 
-	target, err := resolveProfileRef(profile, loadedProfiles)
+	target, err := resolveProfile(profile, loadedProfiles)
 	if err != nil {
 		return LoadResult{}, err
 	}
@@ -192,20 +312,20 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 	if err := version.EnsureCompatible(m.Tohru.Version); err != nil {
 		return LoadResult{}, fmt.Errorf("unsupported profile version %q: %w", m.Tohru.Version, err)
 	}
-	slug, err := parseProfileSlug(m.Profile.Slug)
+	slug, err := profileutils.ValidateSlug(m.Profile.Slug, "profile.slug", true)
 	if err != nil {
 		return LoadResult{}, err
 	}
 	m.Profile.Slug = slug
 
-	ops, err := planOps(m, profileDir)
+	ops, err := plan(m, profileDir)
 	if err != nil {
 		return LoadResult{}, err
 	}
 	changes := newPathRecorder()
-	profileCache := cloneProfileCache(loadedProfiles)
+	profileCache := maps.Clone(loadedProfiles)
 
-	oldByPath := make(map[string]lock.File, len(oldLock.Files))
+	oldByPath := make(map[string]state.File, len(oldLock.Files))
 	for _, f := range oldLock.Files {
 		oldByPath[f.Path] = f
 	}
@@ -215,16 +335,14 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 		occupiedByNew[op.Dest] = struct{}{}
 	}
 
-	snapshot, err := takeRollbackSnapshot(s, oldLock.Files)
+	snapshot, err := takeSnapshot(s, oldLock.Files)
 	if err != nil {
 		return LoadResult{}, err
 	}
-	defer func() {
-		_ = snapshot.Cleanup()
-	}()
+	defer snapshot.Cleanup()
 
 	rollbackOnErr := func(err error) (LoadResult, error) {
-		if rollbackErr := rollbackSwitch(s, oldLock, snapshot, changes.Paths()); rollbackErr != nil {
+		if rollbackErr := rollback(s, oldLock, snapshot, changes.Paths()); rollbackErr != nil {
 			return LoadResult{}, fmt.Errorf("%w (rollback failed: %v)", err, rollbackErr)
 		}
 		return LoadResult{}, fmt.Errorf("%w (rolled back to previous state)", err)
@@ -233,24 +351,24 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 	if err := unloadTracked(s, oldLock.Files, occupiedByNew, opts, changes.Add); err != nil {
 		return rollbackOnErr(err)
 	}
-	if err := cleanupAutoDirs(oldLock.Dirs); err != nil {
+	if err := pruneAutoDirs(oldLock.Dirs, changes.Add); err != nil {
 		return rollbackOnErr(err)
 	}
 
 	// Persist unloaded state before loading the new profile so failures don't
-	// leave lock metadata claiming the old profile is active.
-	unloaded := DefaultLock()
-	if err := s.SaveLock(unloaded); err != nil {
+	// leave state metadata claiming the old profile is active.
+	unloaded := DefaultState()
+	if err := s.SaveState(unloaded); err != nil {
 		return rollbackOnErr(err)
 	}
-	changes.Add(s.LockPath())
+	changes.Add(s.StatePath())
 
-	tracked, autoDirs, err := applyOps(s, cfg, ops, oldByPath, opts.Force, changes.Add)
+	tracked, autoDirs, err := apply(s, cfg, ops, oldByPath, opts.Force, changes.Add)
 	if err != nil {
 		return rollbackOnErr(err)
 	}
 
-	newLock := DefaultLock()
+	newLock := DefaultState()
 	newLock.Manifest.State = "loaded"
 	newLock.Manifest.Kind = "local"
 	newLock.Manifest.Loc = profileDir
@@ -259,43 +377,47 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 	newLock.Files = tracked
 	newLock.Dirs = autoDirs
 
-	if err := s.SaveLock(newLock); err != nil {
+	if err := s.SaveState(newLock); err != nil {
 		return rollbackOnErr(err)
 	}
-	changes.Add(s.LockPath())
+	changes.Add(s.StatePath())
+
+	warnings := make([]string, 0, 2)
 
 	cacheProfile(profileCache, m.Profile, profileDir)
-	if err := s.SaveProfiles(profileCache); err != nil {
-		return LoadResult{}, fmt.Errorf("save profiles cache: %w", err)
+	if err := saveProfilesCache(s, profileCache); err != nil {
+		warnings = append(warnings, fmt.Sprintf("profile cache update failed: %v", err))
+	} else {
+		changes.Add(s.ProfilesFilePath())
 	}
-	changes.Add(s.ProfilesFilePath())
 
 	removedBackups := 0
 
 	if cfg.Options.Clean {
-		removedBackups, err = pruneBackups(s, newLock.Files, changes.Add)
+		removedBackups, err = pruneBackupsFunc(s, newLock.Files, changes.Add)
 		if err != nil {
-			return LoadResult{}, err
+			warnings = append(warnings, fmt.Sprintf("backup cleanup failed: %v", err))
 		}
 	}
 
 	return LoadResult{
 		ProfileDir:           profileDir,
-		ProfileName:          displayProfile(m.Profile.Slug, m.Profile.Name, profileDir),
+		ProfileName:          profileutils.DisplayName(m.Profile.Slug, m.Profile.Name, profileDir),
 		TrackedCount:         len(tracked),
-		UnloadedProfileName:  displayProfile(oldLock.Manifest.Slug, oldLock.Manifest.Name, oldLock.Manifest.Loc),
+		UnloadedProfileName:  profileutils.DisplayName(oldLock.Manifest.Slug, oldLock.Manifest.Name, oldLock.Manifest.Loc),
 		UnloadedTrackedCount: len(oldLock.Files),
 		RemovedBackupCount:   removedBackups,
 		ChangedPaths:         changes.Paths(),
+		Warnings:             warnings,
 	}, nil
 }
 
-func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
-	resolved := m.Resolved
-	ops := make([]manifestOp, 0, len(resolved.Links)+len(resolved.Files)+len(resolved.Dirs))
-	seenDest := make(map[string]struct{}, len(resolved.Links)+len(resolved.Files)+len(resolved.Dirs))
+func plan(m manifest.Manifest, sourceDir string) ([]op, error) {
+	compiled := m.Plan
+	ops := make([]op, 0, len(compiled.Links)+len(compiled.Files)+len(compiled.Dirs))
+	seenDest := make(map[string]struct{}, len(compiled.Links)+len(compiled.Files)+len(compiled.Dirs))
 
-	add := func(op manifestOp) error {
+	add := func(op op) error {
 		if _, ok := seenDest[op.Dest]; ok {
 			return fmt.Errorf("duplicate destination in manifest: %s", op.Dest)
 		}
@@ -304,8 +426,8 @@ func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
 		return nil
 	}
 
-	for _, l := range resolved.Links {
-		src, err := resolveSource(sourceDir, l.To)
+	for _, l := range compiled.Links {
+		src, err := resolvePath(sourceDir, l.To)
 		if err != nil {
 			return nil, fmt.Errorf("link.to %q: %w", l.To, err)
 		}
@@ -314,7 +436,7 @@ func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
 			return nil, fmt.Errorf("link.from %q: %w", l.From, err)
 		}
 
-		if err := add(manifestOp{
+		if err := add(op{
 			Kind:   opLink,
 			Source: src,
 			Dest:   dest,
@@ -324,8 +446,8 @@ func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
 		}
 	}
 
-	for _, f := range resolved.Files {
-		src, err := resolveSource(sourceDir, f.Source)
+	for _, f := range compiled.Files {
+		src, err := resolvePath(sourceDir, f.Source)
 		if err != nil {
 			return nil, fmt.Errorf("file.source %q: %w", f.Source, err)
 		}
@@ -334,7 +456,7 @@ func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
 			return nil, fmt.Errorf("file.dest %q: %w", f.Dest, err)
 		}
 
-		if err := add(manifestOp{
+		if err := add(op{
 			Kind:   opFile,
 			Source: src,
 			Dest:   dest,
@@ -344,13 +466,13 @@ func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
 		}
 	}
 
-	for _, d := range resolved.Dirs {
+	for _, d := range compiled.Dirs {
 		dest, err := fileutils.AbsPath(d.Path)
 		if err != nil {
 			return nil, fmt.Errorf("dir.path %q: %w", d.Path, err)
 		}
 
-		if err := add(manifestOp{
+		if err := add(op{
 			Kind:  opDir,
 			Dest:  dest,
 			Track: d.Tracked == nil || *d.Tracked,
@@ -362,26 +484,22 @@ func planOps(m manifest.Manifest, sourceDir string) ([]manifestOp, error) {
 	return ops, nil
 }
 
-func applyOps(store Store, cfg config.Config, ops []manifestOp, oldByPath map[string]lock.File, force bool, recordPath func(string)) ([]lock.File, []lock.Dir, error) {
-	if recordPath == nil {
-		recordPath = func(string) {}
-	}
-
-	tracked := make([]lock.File, 0, len(ops))
+func apply(store Store, cfg config.Config, ops []op, oldByPath map[string]state.File, force bool, recordPath func(string)) ([]state.File, []state.Dir, error) {
+	tracked := make([]state.File, 0, len(ops))
 	autoDirSet := make(map[string]struct{}, 16)
 
 	for _, op := range ops {
-		var prev *lock.Object
+		var prev *state.Object
 		if old, ok := oldByPath[op.Dest]; ok {
-			prev = old.Prev
+			prev = old.Previous
 		}
 
-		prevAfterPrepare, err := prepareDest(store, cfg, op, prev, force, recordPath)
+		prevAfterPrepare, err := prepare(store, cfg, op, prev, force, recordPath)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s %s: %w", op.Kind, op.Dest, err)
 		}
 
-		createdParents, err := mkdirParents(op.Dest)
+		createdParents, err := makeParents(op.Dest)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -397,7 +515,14 @@ func applyOps(store Store, cfg config.Config, ops []manifestOp, oldByPath map[st
 			}
 			recordPath(op.Dest)
 		case opFile:
-			if err := fileutils.CopyFile(op.Source, op.Dest); err != nil {
+			info, err := os.Lstat(op.Source)
+			if err != nil {
+				return nil, nil, fmt.Errorf("stat manifest source %s: %w", op.Source, err)
+			}
+			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				return nil, nil, fmt.Errorf("manifest file source is a directory: %s", op.Source)
+			}
+			if err := fileutils.CopyPath(op.Source, op.Dest); err != nil {
 				return nil, nil, err
 			}
 			recordPath(op.Dest)
@@ -419,30 +544,26 @@ func applyOps(store Store, cfg config.Config, ops []manifestOp, oldByPath map[st
 			return nil, nil, fmt.Errorf("snapshot tracked path %s: %w", op.Dest, err)
 		}
 
-		tracked = append(tracked, lock.File{
-			Path: op.Dest,
-			Curr: curr,
-			Prev: prevAfterPrepare,
+		tracked = append(tracked, state.File{
+			Path:     op.Dest,
+			Current:  curr,
+			Previous: prevAfterPrepare,
 		})
 	}
 
-	autoDirs := make([]lock.Dir, 0, len(autoDirSet))
+	autoDirs := make([]state.Dir, 0, len(autoDirSet))
 	for path := range autoDirSet {
-		autoDirs = append(autoDirs, lock.Dir{Path: path})
+		autoDirs = append(autoDirs, state.Dir{Path: path})
 	}
-	sort.Slice(autoDirs, func(i, j int) bool {
-		return autoDirs[i].Path < autoDirs[j].Path
+	slices.SortFunc(autoDirs, func(a, b state.Dir) int {
+		return strings.Compare(a.Path, b.Path)
 	})
 
 	return tracked, autoDirs, nil
 }
 
-func prepareDest(store Store, cfg config.Config, op manifestOp, prev *lock.Object, force bool, recordPath func(string)) (*lock.Object, error) {
-	if recordPath == nil {
-		recordPath = func(string) {}
-	}
-
-	current, exists, err := snapshotIfExists(op.Dest)
+func prepare(store Store, cfg config.Config, op op, prev *state.Object, force bool, recordPath func(string)) (*state.Object, error) {
+	current, exists, err := maybeSnapshot(op.Dest)
 	if err != nil {
 		return nil, err
 	}
@@ -478,7 +599,7 @@ func prepareDest(store Store, cfg config.Config, op manifestOp, prev *lock.Objec
 	}
 
 	if prev == nil && cfg.Options.Backup {
-		storedPrev, err := saveBackup(store, current, recordPath)
+		storedPrev, err := storeBackup(store, current, recordPath)
 		if err != nil {
 			return nil, err
 		}
@@ -504,17 +625,22 @@ func prepareDest(store Store, cfg config.Config, op manifestOp, prev *lock.Objec
 	return prev, nil
 }
 
-func unloadTracked(store Store, files []lock.File, occupiedByNew map[string]struct{}, opts Options, recordPath func(string)) error {
-	for _, managed := range sortRemovalOrder(files) {
-		if err := removeTracked(managed, opts, recordPath); err != nil {
+func unloadTracked(store Store, files []state.File, occupiedByNew map[string]struct{}, opts Options, recordPath func(string)) error {
+	managedFiles := slices.Clone(files)
+	slices.SortFunc(managedFiles, func(a, b state.File) int {
+		return -fileutils.CompareDepth(a.Path, b.Path)
+	})
+
+	for _, managed := range managedFiles {
+		if err := removeManaged(managed, opts, recordPath); err != nil {
 			return err
 		}
 
-		if managed.Prev != nil && managed.Prev.Digest != "" {
+		if managed.Previous != nil && managed.Previous.Digest != "" {
 			if _, stillOccupied := occupiedByNew[managed.Path]; stillOccupied {
 				continue
 			}
-			if err := restoreBackup(store, managed.Prev, managed.Path, opts.Force, recordPath); err != nil {
+			if err := restoreBackup(store, managed.Previous, managed.Path, opts.Force, recordPath); err != nil {
 				return err
 			}
 		}
@@ -523,17 +649,13 @@ func unloadTracked(store Store, files []lock.File, occupiedByNew map[string]stru
 	return nil
 }
 
-func removeTracked(managed lock.File, opts Options, recordPath func(string)) error {
-	if recordPath == nil {
-		recordPath = func(string) {}
-	}
-
+func removeManaged(managed state.File, opts Options, recordPath func(string)) error {
 	path := strings.TrimSpace(managed.Path)
 	if path == "" {
 		return nil
 	}
 
-	current, exists, err := snapshotIfExists(path)
+	current, exists, err := maybeSnapshot(path)
 	if err != nil {
 		return fmt.Errorf("check managed path %s: %w", path, err)
 	}
@@ -544,7 +666,7 @@ func removeTracked(managed lock.File, opts Options, recordPath func(string)) err
 		return fmt.Errorf("managed path missing: %s", path)
 	}
 
-	expected, err := digest.Parse(managed.Curr.Digest)
+	expected, err := digest.Parse(managed.Current.Digest)
 	if err != nil {
 		return fmt.Errorf("invalid digest for managed path %s: %w", path, err)
 	}
@@ -564,11 +686,7 @@ func removeTracked(managed lock.File, opts Options, recordPath func(string)) err
 	return nil
 }
 
-func saveBackup(store Store, object lock.Object, recordPath func(string)) (*lock.Object, error) {
-	if recordPath == nil {
-		recordPath = func(string) {}
-	}
-
+func storeBackup(store Store, object state.Object, recordPath func(string)) (*state.Object, error) {
 	d, err := digest.Parse(object.Digest)
 	if err != nil {
 		return nil, fmt.Errorf("parse backup digest for %s: %w", object.Path, err)
@@ -578,9 +696,9 @@ func saveBackup(store Store, object lock.Object, recordPath func(string)) (*lock
 	}
 
 	cid := d.String()
-	objectPath := backupObjPath(store, cid)
+	objectPath := backupPath(store, cid)
 
-	existingBackup, exists, err := snapshotIfExists(objectPath)
+	existingBackup, exists, err := maybeSnapshot(objectPath)
 	if err != nil {
 		return nil, fmt.Errorf("check backup object at %s: %w", objectPath, err)
 	}
@@ -588,7 +706,7 @@ func saveBackup(store Store, object lock.Object, recordPath func(string)) (*lock
 		if existingBackup.Digest != d.String() {
 			return nil, fmt.Errorf("backup collision for CID %s at %s", cid, objectPath)
 		}
-		return &lock.Object{Path: objectPath, Digest: d.String()}, nil
+		return &state.Object{Path: objectPath, Digest: d.String()}, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(objectPath), 0o755); err != nil {
@@ -608,20 +726,16 @@ func saveBackup(store Store, object lock.Object, recordPath func(string)) (*lock
 		return nil, fmt.Errorf("backup digest mismatch for %s", objectPath)
 	}
 
-	return &lock.Object{Path: objectPath, Digest: d.String()}, nil
+	return &state.Object{Path: objectPath, Digest: d.String()}, nil
 }
 
-func restoreBackup(store Store, prev *lock.Object, destination string, force bool, recordPath func(string)) error {
-	if recordPath == nil {
-		recordPath = func(string) {}
-	}
-
+func restoreBackup(store Store, prev *state.Object, destination string, force bool, recordPath func(string)) error {
 	if prev == nil {
 		return nil
 	}
 
-	backupPath := strings.TrimSpace(prev.Path)
-	if backupPath == "" {
+	path := strings.TrimSpace(prev.Path)
+	if path == "" {
 		d, err := digest.Parse(prev.Digest)
 		if err != nil {
 			return fmt.Errorf("parse previous digest for %s: %w", destination, err)
@@ -629,27 +743,27 @@ func restoreBackup(store Store, prev *lock.Object, destination string, force boo
 		if d.IsZero() {
 			return nil
 		}
-		backupPath = backupObjPath(store, d.String())
+		path = backupPath(store, d.String())
 	}
 
-	backup, exists, err := snapshotIfExists(backupPath)
+	backup, exists, err := maybeSnapshot(path)
 	if err != nil {
-		return fmt.Errorf("check backup object %s: %w", backupPath, err)
+		return fmt.Errorf("check backup object %s: %w", path, err)
 	}
 	if !exists {
 		if force {
 			return nil
 		}
-		return fmt.Errorf("missing backup object %s for %s", backupPath, destination)
+		return fmt.Errorf("missing backup object %s for %s", path, destination)
 	}
 
 	if prev.Digest != "" && backup.Digest != prev.Digest {
 		if !force {
-			return fmt.Errorf("backup digest mismatch for %s", backupPath)
+			return fmt.Errorf("backup digest mismatch for %s", path)
 		}
 	}
 
-	_, destinationExists, err := snapshotIfExists(destination)
+	_, destinationExists, err := maybeSnapshot(destination)
 	if err != nil {
 		return fmt.Errorf("check restore destination %s: %w", destination, err)
 	}
@@ -663,25 +777,21 @@ func restoreBackup(store Store, prev *lock.Object, destination string, force boo
 		recordPath(destination)
 	}
 
-	if err := fileutils.CopyPath(backupPath, destination); err != nil {
-		return fmt.Errorf("restore backup %s to %s: %w", backupPath, destination, err)
+	if err := fileutils.CopyPath(path, destination); err != nil {
+		return fmt.Errorf("restore backup %s to %s: %w", path, destination, err)
 	}
 	recordPath(destination)
 
 	return nil
 }
 
-func pruneBackups(store Store, tracked []lock.File, recordPath func(string)) (int, error) {
-	if recordPath == nil {
-		recordPath = func(string) {}
-	}
-
+func pruneBackups(store Store, tracked []state.File, recordPath func(string)) (int, error) {
 	referenced := make(map[string]struct{}, len(tracked))
 	for _, f := range tracked {
-		if f.Prev == nil || f.Prev.Digest == "" {
+		if f.Previous == nil || f.Previous.Digest == "" {
 			continue
 		}
-		d, err := digest.Parse(f.Prev.Digest)
+		d, err := digest.Parse(f.Previous.Digest)
 		if err != nil {
 			return 0, fmt.Errorf("parse previous digest for %s: %w", f.Path, err)
 		}
@@ -717,24 +827,11 @@ func pruneBackups(store Store, tracked []lock.File, recordPath func(string)) (in
 	return removed, nil
 }
 
-func backupObjPath(store Store, cid string) string {
+func backupPath(store Store, cid string) string {
 	return filepath.Join(store.BackupsPath(), cid, "object")
 }
 
-func sortRemovalOrder(files []lock.File) []lock.File {
-	sorted := append([]lock.File(nil), files...)
-	sort.Slice(sorted, func(i, j int) bool {
-		di := fileutils.PathDepth(sorted[i].Path)
-		dj := fileutils.PathDepth(sorted[j].Path)
-		if di == dj {
-			return sorted[i].Path > sorted[j].Path
-		}
-		return di > dj
-	})
-	return sorted
-}
-
-func takeRollbackSnapshot(store Store, files []lock.File) (rollbackSnapshot, error) {
+func takeSnapshot(store Store, files []state.File) (rollbackSnapshot, error) {
 	root, err := os.MkdirTemp(store.Root, "switch-rollback-")
 	if err != nil {
 		return rollbackSnapshot{}, fmt.Errorf("create rollback snapshot directory: %w", err)
@@ -757,7 +854,7 @@ func takeRollbackSnapshot(store Store, files []lock.File) (rollbackSnapshot, err
 		seen[path] = struct{}{}
 
 		entry := snapshotEntry{Path: path}
-		_, exists, statErr := snapshotIfExists(path)
+		_, exists, statErr := maybeSnapshot(path)
 		if statErr != nil {
 			_ = snapshot.Cleanup()
 			return rollbackSnapshot{}, fmt.Errorf("snapshot managed path %s: %w", path, statErr)
@@ -792,9 +889,9 @@ func (s rollbackSnapshot) Cleanup() error {
 	return fileutils.RemovePath(s.root)
 }
 
-func rollbackSwitch(store Store, oldLock lock.Lock, snapshot rollbackSnapshot, changedPaths []string) error {
-	for _, path := range sortPathsByDepth(changedPaths, true) {
-		if path == store.LockPath() {
+func rollback(store Store, oldLock state.State, snapshot rollbackSnapshot, changedPaths []string) error {
+	for _, path := range fileutils.SortByDepth(changedPaths, true) {
+		if path == store.StatePath() {
 			continue
 		}
 		if err := fileutils.RemovePath(path); err != nil {
@@ -806,20 +903,15 @@ func rollbackSwitch(store Store, oldLock lock.Lock, snapshot rollbackSnapshot, c
 	for _, entry := range snapshot.entries {
 		removeTargets = append(removeTargets, entry.Path)
 	}
-	for _, path := range sortPathsByDepth(removeTargets, true) {
+	for _, path := range fileutils.SortByDepth(removeTargets, true) {
 		if err := fileutils.RemovePath(path); err != nil {
 			return fmt.Errorf("rollback clear managed path %s: %w", path, err)
 		}
 	}
 
-	restoreEntries := append([]snapshotEntry(nil), snapshot.entries...)
-	sort.Slice(restoreEntries, func(i, j int) bool {
-		di := fileutils.PathDepth(restoreEntries[i].Path)
-		dj := fileutils.PathDepth(restoreEntries[j].Path)
-		if di == dj {
-			return restoreEntries[i].Path < restoreEntries[j].Path
-		}
-		return di < dj
+	restoreEntries := slices.Clone(snapshot.entries)
+	slices.SortFunc(restoreEntries, func(a, b snapshotEntry) int {
+		return fileutils.CompareDepth(a.Path, b.Path)
 	})
 
 	for _, entry := range restoreEntries {
@@ -831,44 +923,11 @@ func rollbackSwitch(store Store, oldLock lock.Lock, snapshot rollbackSnapshot, c
 		}
 	}
 
-	if err := store.SaveLock(oldLock); err != nil {
+	if err := store.SaveState(oldLock); err != nil {
 		return fmt.Errorf("rollback restore lock: %w", err)
 	}
 
 	return nil
-}
-
-func sortPathsByDepth(paths []string, descending bool) []string {
-	sorted := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	for _, raw := range paths {
-		path := strings.TrimSpace(raw)
-		if path == "" {
-			continue
-		}
-		if _, exists := seen[path]; exists {
-			continue
-		}
-		seen[path] = struct{}{}
-		sorted = append(sorted, path)
-	}
-
-	sort.Slice(sorted, func(i, j int) bool {
-		di := fileutils.PathDepth(sorted[i])
-		dj := fileutils.PathDepth(sorted[j])
-		if di == dj {
-			if descending {
-				return sorted[i] > sorted[j]
-			}
-			return sorted[i] < sorted[j]
-		}
-		if descending {
-			return di > dj
-		}
-		return di < dj
-	})
-
-	return sorted
 }
 
 type pathRecorder struct {
@@ -895,24 +954,10 @@ func (r *pathRecorder) Add(path string) {
 }
 
 func (r *pathRecorder) Paths() []string {
-	return append([]string(nil), r.paths...)
+	return slices.Clone(r.paths)
 }
 
-func displayProfile(slug, name, loc string) string {
-	if trimmedName := strings.TrimSpace(name); trimmedName != "" {
-		return trimmedName
-	}
-	if trimmedSlug := strings.TrimSpace(slug); trimmedSlug != "" {
-		return trimmedSlug
-	}
-	trimmedLoc := strings.TrimSpace(loc)
-	if trimmedLoc == "" {
-		return ""
-	}
-	return filepath.Base(filepath.Clean(trimmedLoc))
-}
-
-func resolveProfileRef(input string, cache map[string]lock.Profile) (string, error) {
+func resolveProfile(input string, cache map[string]state.Profile) (string, error) {
 	ref := strings.TrimSpace(input)
 	if ref == "" {
 		return "", fmt.Errorf("profile reference is empty")
@@ -925,7 +970,7 @@ func resolveProfileRef(input string, cache map[string]lock.Profile) (string, err
 		return "", fmt.Errorf("stat profile reference %q: %w", ref, err)
 	}
 
-	slug := normalizeSlug(ref)
+	slug := profileutils.NormalizeSlug(ref)
 	if cached, ok := cache[slug]; ok {
 		if loc := strings.TrimSpace(cached.Loc); loc != "" {
 			return loc, nil
@@ -935,52 +980,19 @@ func resolveProfileRef(input string, cache map[string]lock.Profile) (string, err
 	return "", fmt.Errorf("profile %q not found as a path and not found in cached profiles", ref)
 }
 
-func cacheProfile(cache map[string]lock.Profile, profile manifest.Profile, loc string) {
-	if cache == nil {
-		return
-	}
-	slug := normalizeSlug(profile.Slug)
+func cacheProfile(cache map[string]state.Profile, profile manifest.Profile, loc string) {
+	slug := profileutils.NormalizeSlug(profile.Slug)
 	if slug == "" {
 		return
 	}
-	cache[slug] = lock.Profile{
+	cache[slug] = state.Profile{
 		Slug: slug,
 		Name: strings.TrimSpace(profile.Name),
 		Loc:  strings.TrimSpace(loc),
 	}
 }
 
-func cloneProfileCache(in map[string]lock.Profile) map[string]lock.Profile {
-	if len(in) == 0 {
-		return map[string]lock.Profile{}
-	}
-	out := make(map[string]lock.Profile, len(in))
-	for slug, profile := range in {
-		out[slug] = profile
-	}
-	return out
-}
-
-func parseProfileSlug(raw string) (string, error) {
-	slug := normalizeSlug(raw)
-	if slug == "" {
-		return "", nil
-	}
-
-	for _, r := range slug {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' {
-			continue
-		}
-		return "", fmt.Errorf("profile.slug %q contains invalid character %q (allowed: letters, digits, '-', '_')", raw, r)
-	}
-	return slug, nil
-}
-
-func normalizeSlug(raw string) string {
-	return strings.ToLower(strings.TrimSpace(raw))
-}
-
-func resolveSource(sourceDir, raw string) (string, error) {
+func resolvePath(sourceDir, raw string) (string, error) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
 		return "", fmt.Errorf("path is empty")
@@ -1001,15 +1013,14 @@ func resolveSource(sourceDir, raw string) (string, error) {
 		return "", fmt.Errorf("compute path relative to source root %s: %w", root, err)
 	}
 
-	up := ".." + string(filepath.Separator)
-	if rel == ".." || strings.HasPrefix(rel, up) {
+	if fileutils.Escapes(rel) {
 		return "", fmt.Errorf("path escapes source root %s: %s", root, resolved)
 	}
 
 	return resolved, nil
 }
 
-func mkdirParents(path string) ([]string, error) {
+func makeParents(path string) ([]string, error) {
 	parent := filepath.Clean(filepath.Dir(path))
 	if parent == "." || parent == string(filepath.Separator) {
 		return nil, nil
@@ -1055,15 +1066,10 @@ func mkdirParents(path string) ([]string, error) {
 	return created, nil
 }
 
-func cleanupAutoDirs(dirs []lock.Dir) error {
-	ordered := append([]lock.Dir(nil), dirs...)
-	sort.Slice(ordered, func(i, j int) bool {
-		di := fileutils.PathDepth(ordered[i].Path)
-		dj := fileutils.PathDepth(ordered[j].Path)
-		if di == dj {
-			return ordered[i].Path > ordered[j].Path
-		}
-		return di > dj
+func pruneAutoDirs(dirs []state.Dir, recordPath func(string)) error {
+	ordered := slices.Clone(dirs)
+	slices.SortFunc(ordered, func(a, b state.Dir) int {
+		return -fileutils.CompareDepth(a.Path, b.Path)
 	})
 
 	for _, d := range ordered {
@@ -1100,29 +1106,30 @@ func cleanupAutoDirs(dirs []lock.Dir) error {
 			}
 			return fmt.Errorf("remove auto dir %s: %w", clean, err)
 		}
+		recordPath(clean)
 	}
 
 	return nil
 }
 
-func snapshotIfExists(path string) (lock.Object, bool, error) {
+func maybeSnapshot(path string) (state.Object, bool, error) {
 	obj, err := snapshot(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return lock.Object{}, false, nil
+			return state.Object{}, false, nil
 		}
-		return lock.Object{}, false, err
+		return state.Object{}, false, err
 	}
 	return obj, true, nil
 }
 
-func snapshot(path string) (lock.Object, error) {
+func snapshot(path string) (state.Object, error) {
 	d, err := digest.ForPath(path)
 	if err != nil {
-		return lock.Object{}, err
+		return state.Object{}, err
 	}
 
-	return lock.Object{
+	return state.Object{
 		Path:   path,
 		Digest: d.String(),
 	}, nil

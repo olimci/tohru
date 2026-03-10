@@ -27,10 +27,6 @@ func tidyAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if !s.IsInstalled() {
-		return fmt.Errorf("tohru is not installed")
-	}
-
 	res, err := s.Tidy()
 	if err != nil {
 		return err

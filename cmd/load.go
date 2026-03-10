@@ -64,6 +64,7 @@ func loadAction(_ context.Context, cmd *cli.Command) error {
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
+	printWarnings(res.Warnings)
 	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

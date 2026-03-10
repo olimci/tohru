@@ -20,17 +20,11 @@ func EncodeSourcePart(part string) string {
 	}
 }
 
-func EncodeSourceParts(parts []string) []string {
-	out := make([]string, len(parts))
-	for i, part := range parts {
-		out[i] = EncodeSourcePart(part)
-	}
-	return out
-}
-
 func SourcePath(sourceRoot string, parts []string) string {
 	pathParts := make([]string, 0, len(parts)+1)
 	pathParts = append(pathParts, sourceRoot)
-	pathParts = append(pathParts, EncodeSourceParts(parts)...)
+	for _, part := range parts {
+		pathParts = append(pathParts, EncodeSourcePart(part))
+	}
 	return filepath.Join(pathParts...)
 }

@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"os"
 	"strings"
 
 	"github.com/olimci/tohru/pkg/store"
+	"github.com/olimci/tohru/pkg/utils/profileutils"
 	"github.com/urfave/cli/v3"
 )
 
@@ -18,6 +20,10 @@ func statusCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:  "backups",
 				Usage: "show backups-only status details",
+			},
+			&cli.BoolFlag{
+				Name:  "json",
+				Usage: "print full status as JSON",
 			},
 		},
 		Action: statusAction,
@@ -34,14 +40,18 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if !s.IsInstalled() {
-		return fmt.Errorf("tohru is not installed")
-	}
 
 	snapshot, err := s.Status()
 	if err != nil {
 		return err
 	}
+
+	if cmd.Bool("json") {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(snapshot)
+	}
+
 	backups := cmd.Bool("backups")
 
 	if backups {
@@ -51,7 +61,7 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 
 	manifestState := strings.ToLower(snapshot.Manifest.State)
 	if manifestState == "loaded" && strings.TrimSpace(snapshot.Manifest.Loc) != "" {
-		fmt.Printf("On profile %s\n", displayProfile(snapshot.Manifest.Slug, snapshot.Manifest.Name, snapshot.Manifest.Loc))
+		fmt.Printf("On profile %s\n", profileutils.DisplayName(snapshot.Manifest.Slug, snapshot.Manifest.Name, snapshot.Manifest.Loc))
 	} else {
 		fmt.Println("No profile loaded")
 	}
@@ -81,7 +91,7 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 }
 
 func printBackups(snapshot store.StatusSnapshot) {
-	fmt.Println("Backups referenced by lock:")
+	fmt.Println("Backups referenced by state:")
 	if len(snapshot.BackupRefs) == 0 {
 		fmt.Println("  (none)")
 	} else {
@@ -114,20 +124,4 @@ func printBackups(snapshot store.StatusSnapshot) {
 			fmt.Printf("  broken  %s\n", cid)
 		}
 	}
-}
-
-func displayProfile(slug, name, loc string) string {
-	trimmedName := strings.TrimSpace(name)
-	if trimmedName != "" {
-		return trimmedName
-	}
-	trimmedSlug := strings.TrimSpace(slug)
-	if trimmedSlug != "" {
-		return trimmedSlug
-	}
-	trimmedLoc := strings.TrimSpace(loc)
-	if trimmedLoc == "" {
-		return ""
-	}
-	return filepath.Base(filepath.Clean(trimmedLoc))
 }

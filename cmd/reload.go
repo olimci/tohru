@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/olimci/tohru/pkg/store"
@@ -40,12 +41,11 @@ func reloadAction(_ context.Context, cmd *cli.Command) error {
 		return err
 	}
 
-	if !s.IsInstalled() {
-		return fmt.Errorf("tohru is not installed, run `tohru install` first")
-	}
-
 	res, err := s.Reload(opts)
 	if err != nil {
+		if errors.Is(err, store.ErrNotInstalled) {
+			return fmt.Errorf("tohru is not installed, run `tohru install` first")
+		}
 		return err
 	}
 
@@ -61,6 +61,7 @@ func reloadAction(_ context.Context, cmd *cli.Command) error {
 	if res.RemovedBackupCount > 0 {
 		fmt.Printf("cleaned %d unreferenced backup object(s)\n", res.RemovedBackupCount)
 	}
+	printWarnings(res.Warnings)
 	printChanges(cmd, res.ChangedPaths)
 	return nil
 }

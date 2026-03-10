@@ -8,6 +8,7 @@ type LoadResult struct {
 	UnloadedTrackedCount int
 	RemovedBackupCount   int
 	ChangedPaths         []string
+	Warnings             []string
 }
 
 type UnloadResult struct {
@@ -15,6 +16,7 @@ type UnloadResult struct {
 	RemovedCount       int
 	RemovedBackupCount int
 	ChangedPaths       []string
+	Warnings           []string
 }
 
 type TidyResult struct {

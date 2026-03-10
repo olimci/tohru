@@ -1,11 +1,13 @@
 package fileutils
 
 import (
+	"cmp"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -50,7 +52,8 @@ func CopyFile(src, dest string) error {
 		return fmt.Errorf("source is not a regular file: %s", src)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	destDir := filepath.Dir(dest)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("create parent directory for %s: %w", dest, err)
 	}
 
@@ -60,10 +63,15 @@ func CopyFile(src, dest string) error {
 	}
 	defer srcFile.Close()
 
-	tmpDest := dest + ".tmp"
-	dstFile, err := os.OpenFile(tmpDest, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, srcInfo.Mode().Perm())
+	dstFile, err := os.CreateTemp(destDir, filepath.Base(dest)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("create temporary file %s: %w", tmpDest, err)
+		return fmt.Errorf("create temporary file for %s: %w", dest, err)
+	}
+	tmpDest := dstFile.Name()
+	if err := dstFile.Chmod(srcInfo.Mode().Perm()); err != nil {
+		_ = dstFile.Close()
+		_ = os.Remove(tmpDest)
+		return fmt.Errorf("chmod temporary file %s: %w", tmpDest, err)
 	}
 
 	_, copyErr := io.Copy(dstFile, srcFile)
@@ -137,19 +145,63 @@ func RemovePath(path string) error {
 }
 
 func PathDepth(path string) int {
-	clean := filepath.Clean(path)
-	if clean == "." {
-		return 0
+	return len(SplitPathParts(path))
+}
+
+func CompareDepth(a, b string) int {
+	if depth := cmp.Compare(PathDepth(a), PathDepth(b)); depth != 0 {
+		return depth
+	}
+	return strings.Compare(a, b)
+}
+
+func SortByDepth(paths []string, descending bool) []string {
+	sorted := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+
+	for _, raw := range paths {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		sorted = append(sorted, path)
 	}
 
-	parts := strings.Split(clean, string(filepath.Separator))
-	depth := 0
-	for _, p := range parts {
-		if p != "" {
-			depth++
+	slices.SortFunc(sorted, func(a, b string) int {
+		order := CompareDepth(a, b)
+		if descending {
+			return -order
 		}
+		return order
+	})
+
+	return sorted
+}
+
+func Escapes(rel string) bool {
+	up := ".." + string(filepath.Separator)
+	return rel == ".." || strings.HasPrefix(rel, up)
+}
+
+func SplitPathParts(path string) []string {
+	clean := filepath.Clean(path)
+	if clean == "." {
+		return nil
 	}
-	return depth
+
+	raw := strings.Split(clean, string(filepath.Separator))
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		if part == "" || part == "." {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 func copyDir(srcRoot, destRoot string) error {

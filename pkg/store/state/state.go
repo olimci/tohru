@@ -1,7 +1,7 @@
-package lock
+package state
 
-// Lock stores the current state of the application.
-type Lock struct {
+// State stores the current state of the application.
+type State struct {
 	Manifest Manifest `json:"manifest"`      // current manifest state
 	Files    []File   `json:"file"`          // tohru managed files
 	Dirs     []Dir    `json:"dir,omitempty"` // auto-created parent dirs (cleanup if empty)
@@ -27,10 +27,10 @@ type Profile struct {
 type File struct {
 	Path string `json:"path"` // path to managed object
 
-	// Curr exists so we can check if a managed file has been modified externally and fail if it has
-	Curr Object `json:"curr"` // existing object state
-	// Prev exists so we know where the backup object is stored, and what it is.
-	Prev *Object `json:"prev,omitempty"` // state of previous object there
+	// Current exists so we can check if a managed file has been modified externally and fail if it has.
+	Current Object `json:"curr"` // existing object state
+	// Previous exists so we know where the backup object is stored, and what it is.
+	Previous *Object `json:"prev,omitempty"` // state of previous object there
 }
 
 // Dir is an auto-created directory that can be removed if empty.

@@ -7,16 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/olimci/tohru/pkg/store/config"
-	"github.com/olimci/tohru/pkg/store/lock"
+	"github.com/olimci/tohru/pkg/store/state"
 	"github.com/olimci/tohru/pkg/version"
 )
 
 const (
 	dirName      = ".tohru"
-	configFile   = "config.toml"
-	lockFile     = "lock.json"
+	configFile   = "config.json"
+	stateFile    = "state.json"
 	backupsDir   = "backups"
 	profilesDir  = "profiles"
 	profilesFile = "profiles.json"
@@ -55,8 +54,8 @@ func (s Store) ConfigPath() string {
 	return filepath.Join(s.Root, configFile)
 }
 
-func (s Store) LockPath() string {
-	return filepath.Join(s.Root, lockFile)
+func (s Store) StatePath() string {
+	return filepath.Join(s.Root, stateFile)
 }
 
 func (s Store) BackupsPath() string {
@@ -75,7 +74,7 @@ func (s Store) IsInstalled() bool {
 	if _, err := os.Stat(s.ConfigPath()); err != nil {
 		return false
 	}
-	if _, err := os.Stat(s.LockPath()); err != nil {
+	if _, err := os.Stat(s.StatePath()); err != nil {
 		return false
 	}
 	return true
@@ -93,9 +92,9 @@ func DefaultConfig() config.Config {
 	}
 }
 
-func DefaultLock() lock.Lock {
-	return lock.Lock{
-		Manifest: lock.Manifest{
+func DefaultState() state.State {
+	return state.State{
+		Manifest: state.Manifest{
 			State: "unloaded",
 			Kind:  defaultKind,
 			Loc:   "",
@@ -107,17 +106,17 @@ func DefaultLock() lock.Lock {
 
 // Install initializes store and fails if store already exists.
 func (s Store) Install() error {
+	lock, err := s.Lock()
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+
 	if s.IsInstalled() {
 		return ErrAlreadyInstalled
 	}
 
-	_, err := s.installMissing()
-	return err
-}
-
-// EnsureInstalled initializes store if missing.
-func (s Store) EnsureInstalled() error {
-	_, err := s.installMissing()
+	_, err = s.installMissing()
 	return err
 }
 
@@ -132,27 +131,21 @@ func (s Store) installMissing() (bool, error) {
 
 	var changed bool
 
-	createdCfg, err := ensureDefaultConfig(s.ConfigPath())
-	if err != nil {
+	if wrote, err := ensureJSONFile(s.ConfigPath(), DefaultConfig()); err != nil {
 		return false, err
-	}
-	if createdCfg {
+	} else if wrote {
 		changed = true
 	}
 
-	createdLock, err := ensureDefaultLock(s)
-	if err != nil {
+	if wrote, err := ensureJSONFile(s.StatePath(), DefaultState()); err != nil {
 		return false, err
-	}
-	if createdLock {
+	} else if wrote {
 		changed = true
 	}
 
-	createdProfiles, err := ensureDefaultProfiles(s)
-	if err != nil {
+	if wrote, err := ensureJSONFile(s.ProfilesFilePath(), map[string]any{}); err != nil {
 		return false, err
-	}
-	if createdProfiles {
+	} else if wrote {
 		changed = true
 	}
 
@@ -168,7 +161,7 @@ func (s Store) LoadConfig() (config.Config, error) {
 		return config.Config{}, fmt.Errorf("stat %s: %w", s.ConfigPath(), err)
 	}
 
-	if _, err := toml.DecodeFile(s.ConfigPath(), &cfg); err != nil {
+	if err := decodeJSON(s.ConfigPath(), &cfg); err != nil {
 		return config.Config{}, fmt.Errorf("decode %s: %w", s.ConfigPath(), err)
 	}
 
@@ -182,21 +175,14 @@ func (s Store) LoadConfig() (config.Config, error) {
 	return cfg, nil
 }
 
-func (s Store) SaveConfig(cfg config.Config) error {
-	if cfg.Tohru.Version == "" {
-		cfg.Tohru.Version = version.Version
-	}
-	return writeTOML(s.ConfigPath(), cfg)
-}
-
-func (s Store) LoadLock() (lock.Lock, error) {
-	lck := DefaultLock()
-	if _, err := os.Stat(s.LockPath()); err == nil {
-		if err := decodeJSONFile(s.LockPath(), &lck); err != nil {
-			return lock.Lock{}, fmt.Errorf("decode %s: %w", s.LockPath(), err)
+func (s Store) LoadState() (state.State, error) {
+	lck := DefaultState()
+	if _, err := os.Stat(s.StatePath()); err == nil {
+		if err := decodeJSON(s.StatePath(), &lck); err != nil {
+			return state.State{}, fmt.Errorf("decode %s: %w", s.StatePath(), err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return lock.Lock{}, fmt.Errorf("stat %s: %w", s.LockPath(), err)
+		return state.State{}, fmt.Errorf("stat %s: %w", s.StatePath(), err)
 	}
 
 	if lck.Manifest.Kind == "" {
@@ -209,7 +195,7 @@ func (s Store) LoadLock() (lock.Lock, error) {
 	return lck, nil
 }
 
-func (s Store) SaveLock(lck lock.Lock) error {
+func (s Store) SaveState(lck state.State) error {
 	if lck.Manifest.Kind == "" {
 		lck.Manifest.Kind = defaultKind
 	}
@@ -217,27 +203,27 @@ func (s Store) SaveLock(lck lock.Lock) error {
 		lck.Manifest.State = "unloaded"
 	}
 
-	return writeJSON(s.LockPath(), lck)
+	return encodeJSON(s.StatePath(), lck)
 }
 
-func (s Store) LoadProfiles() (map[string]lock.Profile, error) {
-	profiles := map[string]lock.Profile{}
+func (s Store) LoadProfiles() (map[string]state.Profile, error) {
+	profiles := map[string]state.Profile{}
 	if _, err := os.Stat(s.ProfilesFilePath()); err == nil {
-		if err := decodeJSONFile(s.ProfilesFilePath(), &profiles); err != nil {
+		if err := decodeJSON(s.ProfilesFilePath(), &profiles); err != nil {
 			return nil, fmt.Errorf("decode %s: %w", s.ProfilesFilePath(), err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("stat %s: %w", s.ProfilesFilePath(), err)
 	}
 	if profiles == nil {
-		profiles = map[string]lock.Profile{}
+		profiles = map[string]state.Profile{}
 	}
 	return profiles, nil
 }
 
-func (s Store) SaveProfiles(profiles map[string]lock.Profile) error {
+func (s Store) SaveProfiles(profiles map[string]state.Profile) error {
 	if profiles == nil {
-		profiles = map[string]lock.Profile{}
+		profiles = map[string]state.Profile{}
 	}
-	return writeJSON(s.ProfilesFilePath(), profiles)
+	return encodeJSON(s.ProfilesFilePath(), profiles)
 }
