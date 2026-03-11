@@ -51,7 +51,7 @@ type snapshotEntry struct {
 }
 
 var (
-	saveProfilesCache = func(s Store, profiles map[string]state.Profile) error {
+	saveProfilesCache = func(s Store, profiles map[string]state.CachedProfile) error {
 		return s.SaveProfiles(profiles)
 	}
 	pruneBackupsFunc = pruneBackups
@@ -191,17 +191,17 @@ func (s Store) reloadUnlocked(opts Options) (LoadResult, error) {
 		return LoadResult{}, err
 	}
 
-	if strings.ToLower(lck.Manifest.State) != "loaded" {
+	if strings.ToLower(lck.Profile.State) != "loaded" {
 		return LoadResult{}, fmt.Errorf("no loaded profile to reload")
 	}
-	if lck.Manifest.Kind != "local" {
-		return LoadResult{}, fmt.Errorf("unsupported profile kind %q", lck.Manifest.Kind)
+	if lck.Profile.Kind != "local" {
+		return LoadResult{}, fmt.Errorf("unsupported profile kind %q", lck.Profile.Kind)
 	}
-	if lck.Manifest.Loc == "" {
+	if lck.Profile.Path == "" {
 		return LoadResult{}, fmt.Errorf("loaded profile location is empty")
 	}
 
-	return s.switchProfile(cfg, lck.Manifest.Loc, opts)
+	return s.switchProfile(cfg, lck.Profile.Path, opts)
 }
 
 func (s Store) unloadUnlocked(opts Options) (UnloadResult, error) {
@@ -251,7 +251,7 @@ func (s Store) unloadUnlocked(opts Options) (UnloadResult, error) {
 	removedBackups := 0
 	warnings := make([]string, 0, 1)
 
-	if cfg.Options.Clean {
+	if cfg.Options.Backups.Prune == config.PruneAuto {
 		removedBackups, err = pruneBackupsFunc(s, newLock.Files, changes.Add)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("backup cleanup failed: %v", err))
@@ -259,7 +259,7 @@ func (s Store) unloadUnlocked(opts Options) (UnloadResult, error) {
 	}
 
 	return UnloadResult{
-		ProfileName:        profileutils.DisplayName(lck.Manifest.Slug, lck.Manifest.Name, lck.Manifest.Loc),
+		ProfileName:        profileutils.DisplayName(lck.Profile.Slug, lck.Profile.Name, lck.Profile.Path),
 		RemovedCount:       len(lck.Files),
 		RemovedBackupCount: removedBackups,
 		ChangedPaths:       changes.Paths(),
@@ -309,8 +309,8 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 	if err != nil {
 		return LoadResult{}, err
 	}
-	if err := version.EnsureCompatible(m.Tohru.Version); err != nil {
-		return LoadResult{}, fmt.Errorf("unsupported profile version %q: %w", m.Tohru.Version, err)
+	if err := version.EnsureCompatible(m.Requires.Tohru); err != nil {
+		return LoadResult{}, fmt.Errorf("unsupported profile version %q: %w", m.Requires.Tohru, err)
 	}
 	slug, err := profileutils.ValidateSlug(m.Profile.Slug, "profile.slug", true)
 	if err != nil {
@@ -369,11 +369,11 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 	}
 
 	newLock := DefaultState()
-	newLock.Manifest.State = "loaded"
-	newLock.Manifest.Kind = "local"
-	newLock.Manifest.Loc = profileDir
-	newLock.Manifest.Slug = m.Profile.Slug
-	newLock.Manifest.Name = strings.TrimSpace(m.Profile.Name)
+	newLock.Profile.State = "loaded"
+	newLock.Profile.Kind = "local"
+	newLock.Profile.Path = profileDir
+	newLock.Profile.Slug = m.Profile.Slug
+	newLock.Profile.Name = strings.TrimSpace(m.Profile.Name)
 	newLock.Files = tracked
 	newLock.Dirs = autoDirs
 
@@ -384,16 +384,18 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 
 	warnings := make([]string, 0, 2)
 
-	cacheProfile(profileCache, m.Profile, profileDir)
-	if err := saveProfilesCache(s, profileCache); err != nil {
-		warnings = append(warnings, fmt.Sprintf("profile cache update failed: %v", err))
-	} else {
-		changes.Add(s.ProfilesFilePath())
+	if cfg.Options.CacheProfiles {
+		cacheProfile(profileCache, m.Profile, profileDir)
+		if err := saveProfilesCache(s, profileCache); err != nil {
+			warnings = append(warnings, fmt.Sprintf("profile cache update failed: %v", err))
+		} else {
+			changes.Add(s.ProfilesFilePath())
+		}
 	}
 
 	removedBackups := 0
 
-	if cfg.Options.Clean {
+	if cfg.Options.Backups.Prune == config.PruneAuto {
 		removedBackups, err = pruneBackupsFunc(s, newLock.Files, changes.Add)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("backup cleanup failed: %v", err))
@@ -404,7 +406,7 @@ func (s Store) switchProfile(cfg config.Config, profile string, opts Options) (L
 		ProfileDir:           profileDir,
 		ProfileName:          profileutils.DisplayName(m.Profile.Slug, m.Profile.Name, profileDir),
 		TrackedCount:         len(tracked),
-		UnloadedProfileName:  profileutils.DisplayName(oldLock.Manifest.Slug, oldLock.Manifest.Name, oldLock.Manifest.Loc),
+		UnloadedProfileName:  profileutils.DisplayName(oldLock.Profile.Slug, oldLock.Profile.Name, oldLock.Profile.Path),
 		UnloadedTrackedCount: len(oldLock.Files),
 		RemovedBackupCount:   removedBackups,
 		ChangedPaths:         changes.Paths(),
@@ -598,7 +600,7 @@ func prepare(store Store, cfg config.Config, op op, prev *state.Object, force bo
 		return prev, nil
 	}
 
-	if prev == nil && cfg.Options.Backup {
+	if prev == nil && cfg.Options.Backups.Enabled {
 		storedPrev, err := storeBackup(store, current, recordPath)
 		if err != nil {
 			return nil, err
@@ -611,8 +613,8 @@ func prepare(store Store, cfg config.Config, op op, prev *state.Object, force bo
 	}
 
 	if !force {
-		if prev == nil && !cfg.Options.Backup {
-			return nil, fmt.Errorf("destination exists and options.backup=false, refusing to clobber without --force")
+		if prev == nil && !cfg.Options.Backups.Enabled {
+			return nil, fmt.Errorf("destination exists and options.backups.enabled=false, refusing to clobber without --force")
 		}
 		return nil, fmt.Errorf("destination exists (would clobber), use --force to overwrite")
 	}
@@ -957,7 +959,7 @@ func (r *pathRecorder) Paths() []string {
 	return slices.Clone(r.paths)
 }
 
-func resolveProfile(input string, cache map[string]state.Profile) (string, error) {
+func resolveProfile(input string, cache map[string]state.CachedProfile) (string, error) {
 	ref := strings.TrimSpace(input)
 	if ref == "" {
 		return "", fmt.Errorf("profile reference is empty")
@@ -972,23 +974,23 @@ func resolveProfile(input string, cache map[string]state.Profile) (string, error
 
 	slug := profileutils.NormalizeSlug(ref)
 	if cached, ok := cache[slug]; ok {
-		if loc := strings.TrimSpace(cached.Loc); loc != "" {
-			return loc, nil
+		if path := strings.TrimSpace(cached.Path); path != "" {
+			return path, nil
 		}
 	}
 
 	return "", fmt.Errorf("profile %q not found as a path and not found in cached profiles", ref)
 }
 
-func cacheProfile(cache map[string]state.Profile, profile manifest.Profile, loc string) {
+func cacheProfile(cache map[string]state.CachedProfile, profile manifest.Profile, loc string) {
 	slug := profileutils.NormalizeSlug(profile.Slug)
 	if slug == "" {
 		return
 	}
-	cache[slug] = state.Profile{
+	cache[slug] = state.CachedProfile{
 		Slug: slug,
 		Name: strings.TrimSpace(profile.Name),
-		Loc:  strings.TrimSpace(loc),
+		Path: strings.TrimSpace(loc),
 	}
 }
 

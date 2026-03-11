@@ -63,17 +63,10 @@ func decodeManifest(path string) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("decode manifest %s: trailing content after top-level object", path)
 	}
 
-	if m.Trees == nil {
-		m.Trees = map[string]Tree{}
-	}
 	return m, nil
 }
 
 func Write(path string, m Manifest) error {
-	if m.Trees == nil {
-		m.Trees = map[string]Tree{}
-	}
-
 	payload, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", path, err)

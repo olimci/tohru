@@ -1,15 +1,22 @@
 package config
 
-type Config struct {
-	Tohru   Tohru   `json:"tohru"`   // Application metadata
-	Options Options `json:"options"` // Application options
-}
+const (
+	SchemaVersion = 1
+	PruneAuto     = "auto"
+	PruneManual   = "manual"
+)
 
-type Tohru struct {
-	Version string `json:"version"` // Application version
+type Config struct {
+	Schema  int     `json:"schema"`
+	Options Options `json:"options"`
 }
 
 type Options struct {
-	Backup bool `json:"backup"` // do we store backups? if no error if an action results in clobbering, unless --force
-	Clean  bool `json:"clean"`  // if enabled, remove all backup objects that are no longer required by lock automatically (perhaps this can be overridden by --clean/--dirty)
+	Backups       Backups `json:"backups"`
+	CacheProfiles bool    `json:"cache_profiles"`
+}
+
+type Backups struct {
+	Enabled bool   `json:"enabled"`
+	Prune   string `json:"prune"`
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/olimci/tohru/pkg/manifest"
 	"github.com/olimci/tohru/pkg/store"
 	"github.com/olimci/tohru/pkg/store/state"
-	"github.com/olimci/tohru/pkg/utils/cloneutils"
 	"github.com/olimci/tohru/pkg/utils/fileutils"
 	"github.com/olimci/tohru/pkg/utils/profileutils"
 	"github.com/olimci/tohru/pkg/version"
@@ -48,7 +47,7 @@ func profileCommand() *cli.Command {
 			},
 			{
 				Name:      "tidy",
-				Usage:     "merge nested tree roots in a profile manifest",
+				Usage:     "merge nested roots in a profile manifest",
 				ArgsUsage: "<slug>",
 				Action:    profileTidyAction,
 			},
@@ -88,7 +87,7 @@ func profileListAction(_ context.Context, cmd *cli.Command) error {
 	for _, slug := range slices.Sorted(maps.Keys(profiles)) {
 		p := profiles[slug]
 		name := strings.TrimSpace(p.Name)
-		loc := strings.TrimSpace(p.Loc)
+		loc := strings.TrimSpace(p.Path)
 
 		if name != "" {
 			fmt.Printf("  %s (%s) -> %s\n", slug, name, loc)
@@ -146,10 +145,10 @@ func profileNewAction(_ context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("write profile manifest %s: %w", manifestPath, err)
 	}
 
-	profiles[slug] = state.Profile{
+	profiles[slug] = state.CachedProfile{
 		Slug: slug,
 		Name: slug,
-		Loc:  profileDir,
+		Path: profileDir,
 	}
 	if err := s.SaveProfiles(profiles); err != nil {
 		return fmt.Errorf("save profiles cache: %w", err)
@@ -231,7 +230,7 @@ func profileTidyAction(_ context.Context, cmd *cli.Command) error {
 	if !ok {
 		return fmt.Errorf("profile %q not found in cache", slug)
 	}
-	profileDir := strings.TrimSpace(profile.Loc)
+	profileDir := strings.TrimSpace(profile.Path)
 	if profileDir == "" {
 		return fmt.Errorf("profile %q has an empty location", slug)
 	}
@@ -261,21 +260,22 @@ func profileTidyAction(_ context.Context, cmd *cli.Command) error {
 
 func defaultManifest(slug string) manifest.Manifest {
 	return manifest.Manifest{
-		Tohru: manifest.Tohru{
-			Version: version.Version,
+		Schema: manifest.SchemaVersion,
+		Requires: manifest.Requires{
+			Tohru: version.Version,
 		},
 		Profile: manifest.Profile{
 			Slug:        slug,
 			Name:        slug,
 			Description: "",
 		},
-		Trees: map[string]manifest.Tree{},
+		Roots: []manifest.Root{},
 	}
 }
 
 type addEntry struct {
 	Parts []string
-	Value any
+	Value manifest.Entry
 }
 
 type copyJob struct {
@@ -283,29 +283,24 @@ type copyJob struct {
 	Dest   string
 }
 
-func pickTree(m *manifest.Manifest, profileDir, targetPath string) (string, string, []string, error) {
-	if m.Trees == nil {
-		m.Trees = map[string]manifest.Tree{}
-	}
-
-	bestSource := ""
+func pickRoot(m *manifest.Manifest, profileDir, targetPath string) (int, string, []string, error) {
+	bestIndex := -1
 	bestDepth := -1
-	var bestSourceRoot string
+	bestSourceRoot := ""
 	var bestRel []string
 
-	for _, source := range slices.Sorted(maps.Keys(m.Trees)) {
-		tree := m.Trees[source]
-		sourceRoot, ok, err := treeSourceRoot(profileDir, source)
+	for i, root := range m.Roots {
+		sourceRoot, ok, err := rootSourceRoot(profileDir, root.Source)
 		if err != nil {
-			return "", "", nil, err
+			return -1, "", nil, err
 		}
 		if !ok {
 			continue
 		}
 
-		destRoot, err := fileutils.AbsPath(tree.Dest)
+		destRoot, err := fileutils.AbsPath(root.Dest)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("resolve trees.%q.dest: %w", source, err)
+			return -1, "", nil, fmt.Errorf("resolve roots[%d].dest: %w", i, err)
 		}
 		rel, err := filepath.Rel(destRoot, targetPath)
 		if err != nil || fileutils.Escapes(rel) {
@@ -313,20 +308,20 @@ func pickTree(m *manifest.Manifest, profileDir, targetPath string) (string, stri
 		}
 		relParts := fileutils.SplitPathParts(rel)
 		if len(relParts) == 0 {
-			return "", "", nil, fmt.Errorf("path %s is equal to trees.%q.dest %s; add a child path instead", targetPath, source, tree.Dest)
+			return -1, "", nil, fmt.Errorf("path %s is equal to roots[%d].dest %s; add a child path instead", targetPath, i, root.Dest)
 		}
 
 		depth := fileutils.PathDepth(destRoot)
-		if bestSource == "" || depth > bestDepth || (depth == bestDepth && source < bestSource) {
-			bestSource = source
+		if bestIndex == -1 || depth > bestDepth || (depth == bestDepth && root.Source < m.Roots[bestIndex].Source) {
+			bestIndex = i
 			bestDepth = depth
 			bestSourceRoot = sourceRoot
 			bestRel = relParts
 		}
 	}
 
-	if bestSource != "" {
-		return bestSource, bestSourceRoot, bestRel, nil
+	if bestIndex != -1 {
+		return bestIndex, bestSourceRoot, bestRel, nil
 	}
 
 	var source string
@@ -343,25 +338,28 @@ func pickTree(m *manifest.Manifest, profileDir, targetPath string) (string, stri
 	if rel == "" {
 		relRoot, relErr := filepath.Rel(string(filepath.Separator), targetPath)
 		if relErr != nil || fileutils.Escapes(relRoot) || relRoot == "." {
-			return "", "", nil, fmt.Errorf("cannot derive tree root for %s", targetPath)
+			return -1, "", nil, fmt.Errorf("cannot derive root for %s", targetPath)
 		}
 		source = "root"
 		dest = string(filepath.Separator)
 		rel = relRoot
 	}
 
-	if existing, exists := m.Trees[source]; exists {
-		return "", "", nil, fmt.Errorf("cannot auto-create tree for %s: trees.%q already exists with dest %q", targetPath, source, existing.Dest)
+	for i, root := range m.Roots {
+		if root.Source == source {
+			return -1, "", nil, fmt.Errorf("cannot auto-create root for %s: roots[%d] already uses source %q with dest %q", targetPath, i, source, root.Dest)
+		}
 	}
 
-	m.Trees[source] = manifest.Tree{
-		Dest:  dest,
-		Files: map[string]any{},
-	}
-	return source, filepath.Join(profileDir, source), fileutils.SplitPathParts(rel), nil
+	m.Roots = append(m.Roots, manifest.Root{
+		Source:  source,
+		Dest:    dest,
+		Entries: map[string]manifest.Entry{},
+	})
+	return len(m.Roots) - 1, filepath.Join(profileDir, source), fileutils.SplitPathParts(rel), nil
 }
 
-func treeSourceRoot(profileDir, source string) (string, bool, error) {
+func rootSourceRoot(profileDir, source string) (string, bool, error) {
 	source = fileutils.ExpandHome(strings.TrimSpace(source))
 	if source == "" {
 		return "", false, nil
@@ -388,7 +386,7 @@ func treeSourceRoot(profileDir, source string) (string, bool, error) {
 func buildEntries(localPath string, relParts []string, info os.FileInfo) ([]addEntry, error) {
 	switch {
 	case info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0:
-		return []addEntry{{Parts: append([]string(nil), relParts...), Value: map[string]any{"mode": "copy"}}}, nil
+		return []addEntry{{Parts: append([]string(nil), relParts...), Value: manifest.Entry{Type: "copy"}}}, nil
 	case info.IsDir():
 		entries := make([]addEntry, 0, 8)
 		err := filepath.WalkDir(localPath, func(path string, d fs.DirEntry, err error) error {
@@ -410,14 +408,14 @@ func buildEntries(localPath string, relParts []string, info os.FileInfo) ([]addE
 					return err
 				}
 				if empty {
-					entries = append(entries, addEntry{Parts: parts, Value: map[string]any{"kind": "dir"}})
+					entries = append(entries, addEntry{Parts: parts, Value: manifest.Entry{Type: "dir"}})
 				}
 				return nil
 			}
 
 			t := d.Type()
 			if t.IsRegular() || t&os.ModeSymlink != 0 {
-				entries = append(entries, addEntry{Parts: parts, Value: map[string]any{"mode": "copy"}})
+				entries = append(entries, addEntry{Parts: parts, Value: manifest.Entry{Type: "copy"}})
 				return nil
 			}
 			return fmt.Errorf("unsupported file type at %s", path)
@@ -426,7 +424,7 @@ func buildEntries(localPath string, relParts []string, info os.FileInfo) ([]addE
 			return nil, fmt.Errorf("walk source directory %s: %w", localPath, err)
 		}
 		if len(entries) == 0 {
-			entries = append(entries, addEntry{Parts: append([]string(nil), relParts...), Value: map[string]any{"kind": "dir"}})
+			entries = append(entries, addEntry{Parts: append([]string(nil), relParts...), Value: manifest.Entry{Type: "dir"}})
 		}
 		return entries, nil
 	default:
@@ -443,7 +441,7 @@ func addPath(s store.Store, slug, localPath string, info os.FileInfo) ([]string,
 	if !ok {
 		return nil, fmt.Errorf("profile %q not found in cache", slug)
 	}
-	profileDir := strings.TrimSpace(profile.Loc)
+	profileDir := strings.TrimSpace(profile.Path)
 	if profileDir == "" {
 		return nil, fmt.Errorf("profile %q has an empty location", slug)
 	}
@@ -453,7 +451,7 @@ func addPath(s store.Store, slug, localPath string, info os.FileInfo) ([]string,
 		return nil, err
 	}
 
-	treeSource, sourceRoot, relParts, err := pickTree(&m, profileDir, localPath)
+	rootIndex, sourceRoot, relParts, err := pickRoot(&m, profileDir, localPath)
 	if err != nil {
 		return nil, err
 	}
@@ -462,16 +460,16 @@ func addPath(s store.Store, slug, localPath string, info os.FileInfo) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	tree := m.Trees[treeSource]
-	if tree.Files == nil {
-		tree.Files = map[string]any{}
+	root := m.Roots[rootIndex]
+	if root.Entries == nil {
+		root.Entries = map[string]manifest.Entry{}
 	}
 	for _, entry := range entries {
-		if err := insertEntry(tree.Files, entry.Parts, entry.Value); err != nil {
+		if err := insertEntry(root.Entries, entry.Parts, entry.Value); err != nil {
 			return nil, err
 		}
 	}
-	m.Trees[treeSource] = tree
+	m.Roots[rootIndex] = root
 	if err := m.Resolve(); err != nil {
 		return nil, fmt.Errorf("validate updated manifest: %w", err)
 	}
@@ -534,7 +532,7 @@ func copyJobs(localPath, sourceRoot string, relParts []string, entries []addEntr
 	case info.IsDir():
 		jobs := make([]copyJob, 0, len(entries))
 		for _, entry := range entries {
-			if manifest.IsDirSpec(entry.Value) {
+			if strings.EqualFold(strings.TrimSpace(entry.Value.Type), "dir") {
 				continue
 			}
 			suffix, err := suffixParts(entry.Parts, relParts)
@@ -618,7 +616,7 @@ func isEmptyDir(path string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
-func insertEntry(root map[string]any, parts []string, value any) error {
+func insertEntry(root map[string]manifest.Entry, parts []string, value manifest.Entry) error {
 	if len(parts) == 0 {
 		return fmt.Errorf("cannot add empty path")
 	}
@@ -626,21 +624,22 @@ func insertEntry(root map[string]any, parts []string, value any) error {
 	node := root
 	for i := 0; i < len(parts)-1; i++ {
 		part := parts[i]
-		raw, exists := node[part]
+		entry, exists := node[part]
 		if !exists {
-			next := map[string]any{}
+			next := manifest.Entry{Entries: map[string]manifest.Entry{}}
 			node[part] = next
-			node = next
+			node = next.Entries
 			continue
 		}
-		if manifest.IsLeafSpec(raw) {
+		entryType := strings.ToLower(strings.TrimSpace(entry.Type))
+		if entryType == "copy" || entryType == "link" {
 			return fmt.Errorf("cannot add %q: %q is already a leaf entry", strings.Join(parts, "."), strings.Join(parts[:i+1], "."))
 		}
-		next, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("cannot add %q: %q is not a nested table", strings.Join(parts, "."), strings.Join(parts[:i+1], "."))
+		if entry.Entries == nil {
+			entry.Entries = map[string]manifest.Entry{}
+			node[part] = entry
 		}
-		node = next
+		node = entry.Entries
 	}
 
 	leaf := parts[len(parts)-1]
@@ -650,6 +649,6 @@ func insertEntry(root map[string]any, parts []string, value any) error {
 		}
 		return fmt.Errorf("cannot add %q: path already exists with a different definition", strings.Join(parts, "."))
 	}
-	node[leaf] = cloneutils.Any(value)
+	node[leaf] = value
 	return nil
 }

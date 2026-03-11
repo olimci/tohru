@@ -2,24 +2,25 @@ package manifest
 
 import (
 	"fmt"
-	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
 )
 
-// Manifest represents a configuration file for a Tohru dotfiles source
-type Manifest struct {
-	Tohru   Tohru   `json:"tohru"`   // application metadata
-	Profile Profile `json:"profile"` // profile metadata
+const SchemaVersion = 1
 
-	Trees map[string]Tree `json:"trees"` // source -> tree definition
+// Manifest represents a configuration file for a Tohru dotfiles source.
+type Manifest struct {
+	Schema   int      `json:"schema"`
+	Requires Requires `json:"requires,omitempty"`
+	Profile  Profile  `json:"profile"`
+	Roots    []Root   `json:"roots,omitempty"`
 
 	Plan Plan `json:"-"`
 }
 
-type Tohru struct {
-	Version string `json:"version"` // check this if version is compatible probably semver
+type Requires struct {
+	Tohru string `json:"tohru,omitempty"`
 }
 
 type Profile struct {
@@ -28,9 +29,23 @@ type Profile struct {
 	Description string `json:"description"`
 }
 
-type Tree struct {
-	Dest  string         `json:"dest"`
-	Files map[string]any `json:"files,omitempty"`
+type Root struct {
+	Source   string           `json:"source"`
+	Dest     string           `json:"dest"`
+	Defaults *Defaults        `json:"defaults,omitempty"`
+	Entries  map[string]Entry `json:"entries,omitempty"`
+}
+
+type Defaults struct {
+	Type  string `json:"type,omitempty"`
+	Track *bool  `json:"track,omitempty"`
+}
+
+type Entry struct {
+	Type     string           `json:"type,omitempty"`
+	Track    *bool            `json:"track,omitempty"`
+	Defaults *Defaults        `json:"defaults,omitempty"`
+	Entries  map[string]Entry `json:"entries,omitempty"`
 }
 
 type Plan struct {
@@ -59,20 +74,22 @@ type Dir struct {
 }
 
 func (m *Manifest) Resolve() error {
+	if m.Schema != SchemaVersion {
+		return fmt.Errorf("schema: unsupported value %d (expected %d)", m.Schema, SchemaVersion)
+	}
+
 	links := make([]Link, 0, 16)
 	files := make([]File, 0, 16)
 	dirs := make([]Dir, 0, 8)
 
-	for _, source := range slices.Sorted(maps.Keys(m.Trees)) {
-		tree := m.Trees[source]
-
-		treeLinks, treeFiles, treeDirs, err := tree.compile(source)
+	for i, root := range m.Roots {
+		rootLinks, rootFiles, rootDirs, err := root.compile()
 		if err != nil {
-			return err
+			return fmt.Errorf("roots[%d]: %w", i, err)
 		}
-		links = append(links, treeLinks...)
-		files = append(files, treeFiles...)
-		dirs = append(dirs, treeDirs...)
+		links = append(links, rootLinks...)
+		files = append(files, rootFiles...)
+		dirs = append(dirs, rootDirs...)
 	}
 
 	m.Plan = Plan{
@@ -83,15 +100,15 @@ func (m *Manifest) Resolve() error {
 	return nil
 }
 
-func (t Tree) compile(source string) ([]Link, []File, []Dir, error) {
-	source = strings.TrimSpace(source)
+func (r Root) compile() ([]Link, []File, []Dir, error) {
+	source := strings.TrimSpace(r.Source)
 	if source == "" {
-		return nil, nil, nil, fmt.Errorf("trees: source key is empty")
+		return nil, nil, nil, fmt.Errorf("source: value is required")
 	}
 
-	dest := strings.TrimSpace(t.Dest)
+	dest := strings.TrimSpace(r.Dest)
 	if dest == "" {
-		return nil, nil, nil, fmt.Errorf("trees.%q.dest: value is required", source)
+		return nil, nil, nil, fmt.Errorf("dest: value is required")
 	}
 
 	var (
@@ -100,43 +117,9 @@ func (t Tree) compile(source string) ([]Link, []File, []Dir, error) {
 		dirs  = make([]Dir, 0)
 	)
 
-	var walk func(node map[string]any, parts []string) error
-	walk = func(node map[string]any, parts []string) error {
-		for _, key := range slices.Sorted(maps.Keys(node)) {
-			entryPath := append(append([]string(nil), parts...), key)
-			raw := node[key]
-
-			spec, isLeaf, err := DecodeLeaf(raw)
-			if err != nil {
-				return fmt.Errorf("trees.%q.files.%s: %w", source, formatTreePath(entryPath), err)
-			}
-			if isLeaf {
-				if err := addLeaf(&links, &files, &dirs, source, dest, entryPath, spec); err != nil {
-					return fmt.Errorf("trees.%q.files.%s: %w", source, formatTreePath(entryPath), err)
-				}
-				continue
-			}
-
-			child := raw.(map[string]any)
-
-			// Empty nested tables represent explicit empty directory entries.
-			if len(child) == 0 {
-				destParts := append([]string{dest}, entryPath...)
-				dirs = append(dirs, Dir{
-					Path: filepath.Join(destParts...),
-				})
-				continue
-			}
-
-			if err := walk(child, entryPath); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	if len(t.Files) > 0 {
-		if err := walk(t.Files, nil); err != nil {
+	defaults := mergeDefaults(Defaults{}, r.Defaults)
+	if len(r.Entries) > 0 {
+		if err := compileEntries(&links, &files, &dirs, source, dest, nil, defaults, r.Entries); err != nil {
 			return nil, nil, nil, err
 		}
 	}
@@ -144,51 +127,86 @@ func (t Tree) compile(source string) ([]Link, []File, []Dir, error) {
 	return links, files, dirs, nil
 }
 
-func addLeaf(links *[]Link, files *[]File, dirs *[]Dir, sourceRoot, destRoot string, parts []string, spec Leaf) error {
-	kind := strings.ToLower(strings.TrimSpace(spec.Kind))
-	if kind == "" {
-		kind = "file"
+func compileEntries(links *[]Link, files *[]File, dirs *[]Dir, sourceRoot, destRoot string, parts []string, defaults Defaults, entries map[string]Entry) error {
+	keys := make([]string, 0, len(entries))
+	for key := range entries {
+		keys = append(keys, key)
 	}
+	slices.Sort(keys)
 
-	switch kind {
-	case "file":
-		mode := strings.ToLower(strings.TrimSpace(spec.Mode))
-		if mode == "" {
-			return fmt.Errorf("mode is required for file entries")
+	for _, key := range keys {
+		entryPath := append(append([]string(nil), parts...), key)
+		entry := entries[key]
+		pathLabel := formatTreePath(entryPath)
+
+		if entry.Defaults != nil && len(entry.Entries) == 0 {
+			return fmt.Errorf("entries.%s.defaults: defaults require nested entries", pathLabel)
 		}
 
-		dstParts := append([]string{destRoot}, parts...)
-		dst := filepath.Join(dstParts...)
+		entryType := strings.ToLower(strings.TrimSpace(entry.Type))
+		entryDefaults := mergeDefaults(defaults, entry.Defaults)
+		hasChildren := len(entry.Entries) > 0
 
-		switch mode {
-		case "link":
-			if spec.Tracked != nil {
-				return fmt.Errorf("tracked is not supported for link entries")
+		if hasChildren {
+			switch entryType {
+			case "", "dir":
+			default:
+				return fmt.Errorf("entries.%s.type: unsupported value %q for an entry with children", pathLabel, entry.Type)
 			}
-			*links = append(*links, Link{
-				To:   SourcePath(sourceRoot, parts),
-				From: dst,
-			})
+
+			if entry.Track != nil && entryType == "" {
+				return fmt.Errorf("entries.%s.track: track requires type \"dir\" when nested entries are present", pathLabel)
+			}
+
+			if entryType == "dir" {
+				*dirs = append(*dirs, Dir{
+					Path:    filepath.Join(append([]string{destRoot}, entryPath...)...),
+					Tracked: pickTrack(defaults.Track, entry.Track),
+				})
+			}
+
+			if err := compileEntries(links, files, dirs, sourceRoot, destRoot, entryPath, entryDefaults, entry.Entries); err != nil {
+				return err
+			}
+			continue
+		}
+
+		effectiveType := entryType
+		if effectiveType == "" {
+			effectiveType = strings.ToLower(strings.TrimSpace(entryDefaults.Type))
+		}
+		if effectiveType == "" {
+			return fmt.Errorf("entries.%s.type: value is required", pathLabel)
+		}
+
+		tracked := pickTrack(entryDefaults.Track, entry.Track)
+		dst := filepath.Join(append([]string{destRoot}, entryPath...)...)
+
+		switch effectiveType {
 		case "copy":
 			*files = append(*files, File{
-				Source:  SourcePath(sourceRoot, parts),
+				Source:  SourcePath(sourceRoot, entryPath),
 				Dest:    dst,
-				Tracked: spec.Tracked,
+				Tracked: tracked,
+			})
+		case "link":
+			if tracked != nil && !*tracked {
+				return fmt.Errorf("entries.%s.track: track=false is not supported for link entries", pathLabel)
+			}
+			*links = append(*links, Link{
+				To:   SourcePath(sourceRoot, entryPath),
+				From: dst,
+			})
+		case "dir":
+			*dirs = append(*dirs, Dir{
+				Path:    dst,
+				Tracked: tracked,
 			})
 		default:
-			return fmt.Errorf("unsupported mode %q (expected \"link\" or \"copy\")", spec.Mode)
+			return fmt.Errorf("entries.%s.type: unsupported value %q (expected \"copy\", \"link\", or \"dir\")", pathLabel, entry.Type)
 		}
-	case "dir":
-		if strings.TrimSpace(spec.Mode) != "" {
-			return fmt.Errorf("mode is not supported for dir entries")
-		}
-		*dirs = append(*dirs, Dir{
-			Path:    filepath.Join(append([]string{destRoot}, parts...)...),
-			Tracked: spec.Tracked,
-		})
-	default:
-		return fmt.Errorf("unsupported kind %q (expected \"file\" or \"dir\")", spec.Kind)
 	}
+
 	return nil
 }
 
@@ -205,4 +223,36 @@ func formatTreePath(parts []string) string {
 		out = append(out, part)
 	}
 	return strings.Join(out, ".")
+}
+
+func mergeDefaults(base Defaults, override *Defaults) Defaults {
+	out := Defaults{
+		Type:  base.Type,
+		Track: cloneBool(base.Track),
+	}
+	if override == nil {
+		return out
+	}
+	if strings.TrimSpace(override.Type) != "" {
+		out.Type = override.Type
+	}
+	if override.Track != nil {
+		out.Track = cloneBool(override.Track)
+	}
+	return out
+}
+
+func pickTrack(base, override *bool) *bool {
+	if override != nil {
+		return cloneBool(override)
+	}
+	return cloneBool(base)
+}
+
+func cloneBool(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	return &out
 }

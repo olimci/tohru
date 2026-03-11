@@ -59,9 +59,9 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 		return nil
 	}
 
-	manifestState := strings.ToLower(snapshot.Manifest.State)
-	if manifestState == "loaded" && strings.TrimSpace(snapshot.Manifest.Loc) != "" {
-		fmt.Printf("On profile %s\n", profileutils.DisplayName(snapshot.Manifest.Slug, snapshot.Manifest.Name, snapshot.Manifest.Loc))
+	profileState := strings.ToLower(snapshot.Profile.State)
+	if profileState == "loaded" && strings.TrimSpace(snapshot.Profile.Path) != "" {
+		fmt.Printf("On profile %s\n", profileutils.DisplayName(snapshot.Profile.Slug, snapshot.Profile.Name, snapshot.Profile.Path))
 	} else {
 		fmt.Println("No profile loaded")
 	}

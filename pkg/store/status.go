@@ -13,7 +13,7 @@ import (
 )
 
 type StatusSnapshot struct {
-	Manifest        state.Manifest
+	Profile         state.Profile
 	Tracked         []TrackedStatus
 	BackupRefs      []BackupRefStatus
 	OrphanedBackups []string
@@ -119,7 +119,7 @@ func (s Store) Status() (StatusSnapshot, error) {
 	}
 
 	return StatusSnapshot{
-		Manifest:        lck.Manifest,
+		Profile:         lck.Profile,
 		Tracked:         tracked,
 		BackupRefs:      refs,
 		OrphanedBackups: orphaned,

@@ -9,7 +9,6 @@ import (
 
 	"github.com/olimci/tohru/pkg/store/config"
 	"github.com/olimci/tohru/pkg/store/state"
-	"github.com/olimci/tohru/pkg/version"
 )
 
 const (
@@ -82,22 +81,23 @@ func (s Store) IsInstalled() bool {
 
 func DefaultConfig() config.Config {
 	return config.Config{
-		Tohru: config.Tohru{
-			Version: version.Version,
-		},
+		Schema: config.SchemaVersion,
 		Options: config.Options{
-			Backup: true,
-			Clean:  true,
+			Backups: config.Backups{
+				Enabled: true,
+				Prune:   config.PruneAuto,
+			},
+			CacheProfiles: true,
 		},
 	}
 }
 
 func DefaultState() state.State {
 	return state.State{
-		Manifest: state.Manifest{
+		Profile: state.Profile{
 			State: "unloaded",
 			Kind:  defaultKind,
-			Loc:   "",
+			Path:  "",
 		},
 		Files: nil,
 		Dirs:  nil,
@@ -165,11 +165,18 @@ func (s Store) LoadConfig() (config.Config, error) {
 		return config.Config{}, fmt.Errorf("decode %s: %w", s.ConfigPath(), err)
 	}
 
-	if cfg.Tohru.Version == "" {
-		cfg.Tohru.Version = version.Version
+	if cfg.Schema != config.SchemaVersion {
+		return config.Config{}, fmt.Errorf("unsupported config schema %d", cfg.Schema)
 	}
-	if err := version.EnsureCompatible(cfg.Tohru.Version); err != nil {
-		return config.Config{}, fmt.Errorf("unsupported config version %q: %w", cfg.Tohru.Version, err)
+
+	cfg.Options.Backups.Prune = strings.ToLower(strings.TrimSpace(cfg.Options.Backups.Prune))
+	if cfg.Options.Backups.Prune == "" {
+		cfg.Options.Backups.Prune = config.PruneAuto
+	}
+	switch cfg.Options.Backups.Prune {
+	case config.PruneAuto, config.PruneManual:
+	default:
+		return config.Config{}, fmt.Errorf("unsupported options.backups.prune value %q", cfg.Options.Backups.Prune)
 	}
 
 	return cfg, nil
@@ -185,29 +192,29 @@ func (s Store) LoadState() (state.State, error) {
 		return state.State{}, fmt.Errorf("stat %s: %w", s.StatePath(), err)
 	}
 
-	if lck.Manifest.Kind == "" {
-		lck.Manifest.Kind = defaultKind
+	if lck.Profile.Kind == "" {
+		lck.Profile.Kind = defaultKind
 	}
-	if lck.Manifest.State == "" {
-		lck.Manifest.State = "unloaded"
+	if lck.Profile.State == "" {
+		lck.Profile.State = "unloaded"
 	}
 
 	return lck, nil
 }
 
 func (s Store) SaveState(lck state.State) error {
-	if lck.Manifest.Kind == "" {
-		lck.Manifest.Kind = defaultKind
+	if lck.Profile.Kind == "" {
+		lck.Profile.Kind = defaultKind
 	}
-	if lck.Manifest.State == "" {
-		lck.Manifest.State = "unloaded"
+	if lck.Profile.State == "" {
+		lck.Profile.State = "unloaded"
 	}
 
 	return encodeJSON(s.StatePath(), lck)
 }
 
-func (s Store) LoadProfiles() (map[string]state.Profile, error) {
-	profiles := map[string]state.Profile{}
+func (s Store) LoadProfiles() (map[string]state.CachedProfile, error) {
+	profiles := map[string]state.CachedProfile{}
 	if _, err := os.Stat(s.ProfilesFilePath()); err == nil {
 		if err := decodeJSON(s.ProfilesFilePath(), &profiles); err != nil {
 			return nil, fmt.Errorf("decode %s: %w", s.ProfilesFilePath(), err)
@@ -216,14 +223,14 @@ func (s Store) LoadProfiles() (map[string]state.Profile, error) {
 		return nil, fmt.Errorf("stat %s: %w", s.ProfilesFilePath(), err)
 	}
 	if profiles == nil {
-		profiles = map[string]state.Profile{}
+		profiles = map[string]state.CachedProfile{}
 	}
 	return profiles, nil
 }
 
-func (s Store) SaveProfiles(profiles map[string]state.Profile) error {
+func (s Store) SaveProfiles(profiles map[string]state.CachedProfile) error {
 	if profiles == nil {
-		profiles = map[string]state.Profile{}
+		profiles = map[string]state.CachedProfile{}
 	}
 	return encodeJSON(s.ProfilesFilePath(), profiles)
 }

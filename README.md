@@ -19,7 +19,7 @@ tohru profile list
 tohru profile new <slug>
 # copy a local path into a profile and add manifest entries
 tohru profile add <slug> <path>
-# merge nested tree roots in a profile manifest
+# merge nested roots in a profile manifest
 tohru profile tidy <slug>
 # load some dotfiles (path, or a cached profile slug)
 tohru load [profile]
@@ -39,36 +39,46 @@ dotfiles are defined with a `tohru.json` file:
 
 ```json
 {
-  "tohru": {
-    "version": "0.2.0"
+  "schema": 1,
+  "requires": {
+    "tohru": "0.2.0"
   },
   "profile": {
     "slug": "my-dotfiles",
     "name": "my-dotfiles",
     "description": "personal setup"
   },
-
-  "trees": {
-    "home": {
+  "roots": [
+    {
+      "source": "home",
       "dest": "~",
-      "files": {
-        ".zshrc": { "mode": "copy" },
+      "defaults": {
+        "type": "link"
+      },
+      "entries": {
+        ".zshrc": { "type": "copy" },
         ".config": {
-          "kitty": {
-            "kitty.conf": { "mode": "link" },
-            "theme.conf": { "mode": "link" },
-            "kitty.app.png": { "mode": "copy", "tracked": false }
-          },
-          "nvim": {
-            "after": { "kind": "dir", "tracked": false }
+          "entries": {
+            "kitty": {
+              "entries": {
+                "kitty.conf": {},
+                "theme.conf": {},
+                "kitty.app.png": { "type": "copy", "track": false }
+              }
+            },
+            "nvim": {
+              "entries": {
+                "after": { "type": "dir", "track": false }
+              }
+            }
           }
         }
       }
     }
-  }
+  ]
 }
 ```
 
-In profile source trees, hidden path segments are encoded with a `dot_` prefix (for example, `.config/nvim` is stored as `dot_config/nvim`).
+In profile source trees, hidden path segments are encoded with a `dot_` prefix, so `.config/nvim` is stored as `dot_config/nvim`.
 
 When a loaded profile has `profile.slug`, tohru caches `slug -> profile path` in state, so future `tohru load <slug>` works without the full path.

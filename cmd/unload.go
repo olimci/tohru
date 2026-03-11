@@ -48,7 +48,7 @@ func unloadAction(_ context.Context, cmd *cli.Command) error {
 	if err != nil {
 		return err
 	}
-	if strings.ToLower(lck.Manifest.State) != "loaded" && len(lck.Files) == 0 {
+	if strings.ToLower(lck.Profile.State) != "loaded" && len(lck.Files) == 0 {
 		fmt.Println("nothing to unload")
 		return nil
 	}

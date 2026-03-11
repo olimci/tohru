@@ -2,99 +2,89 @@ package manifest
 
 import (
 	"fmt"
-	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 
-	"github.com/olimci/tohru/pkg/utils/cloneutils"
 	"github.com/olimci/tohru/pkg/utils/fileutils"
 )
 
-// Tidy merges nested tree roots when the source/dest nesting is equivalent.
-// It updates m.Trees in-place and rebuilds the compiled plan.
+// Tidy merges nested roots when the source/dest nesting is equivalent.
+// It updates m.Roots in-place and rebuilds the compiled plan.
 func (m *Manifest) Tidy() (int, error) {
-	tidied, merges, err := tidy(m.Trees)
+	tidied, merges, err := tidy(m.Roots)
 	if err != nil {
 		return 0, err
 	}
-	m.Trees = tidied
+	m.Roots = tidied
 	if err := m.Resolve(); err != nil {
 		return 0, err
 	}
 	return merges, nil
 }
 
-func tidy(trees map[string]Tree) (map[string]Tree, int, error) {
-	out := maps.Clone(trees)
-	for source, tree := range out {
-		tree.Files = cloneutils.AnyMap(tree.Files)
-		out[source] = tree
+func tidy(roots []Root) ([]Root, int, error) {
+	out := make([]Root, len(roots))
+	for i, root := range roots {
+		out[i] = cloneRoot(root)
 	}
 	merges := 0
 
 	for {
-		parentSource, childSource, relParts, ok := findNestedPair(out)
+		parentIdx, childIdx, relParts, ok := findNestedPair(out)
 		if !ok {
 			break
 		}
 
-		parent := out[parentSource]
-		child := out[childSource]
-
-		mergedFiles, err := mergeTreeFiles(parent.Files, child.Files, relParts)
+		mergedRoot, err := mergeRoot(out[parentIdx], out[childIdx], relParts)
 		if err != nil {
 			return nil, merges, err
 		}
-		parent.Files = mergedFiles
-		out[parentSource] = parent
-		delete(out, childSource)
+		out[parentIdx] = mergedRoot
+		out = append(out[:childIdx], out[childIdx+1:]...)
 		merges++
 	}
 
 	return out, merges, nil
 }
 
-func findNestedPair(trees map[string]Tree) (string, string, []string, bool) {
-	sources := slices.Sorted(maps.Keys(trees))
-	bestParent := ""
-	bestChild := ""
+func findNestedPair(roots []Root) (int, int, []string, bool) {
+	bestParent := -1
+	bestChild := -1
 	bestDepth := int(^uint(0) >> 1)
 	var bestRel []string
 
-	for _, parentSource := range sources {
-		parent := trees[parentSource]
-		for _, childSource := range sources {
-			if parentSource == childSource {
+	for parentIdx, parent := range roots {
+		for childIdx, child := range roots {
+			if parentIdx == childIdx {
 				continue
 			}
-			child := trees[childSource]
 
-			relParts, ok := nestedTreePrefix(parentSource, parent, childSource, child)
+			relParts, ok := nestedRootPrefix(parent, child)
 			if !ok {
 				continue
 			}
 
-			depth := fileutils.PathDepth(strings.TrimSpace(parentSource))
-			if bestParent == "" || depth < bestDepth || (depth == bestDepth && parentSource < bestParent) {
-				bestParent = parentSource
-				bestChild = childSource
+			depth := fileutils.PathDepth(strings.TrimSpace(parent.Source))
+			if bestParent == -1 || depth < bestDepth || (depth == bestDepth && parent.Source < roots[bestParent].Source) {
+				bestParent = parentIdx
+				bestChild = childIdx
 				bestDepth = depth
 				bestRel = relParts
 			}
 		}
 	}
 
-	if bestParent == "" {
-		return "", "", nil, false
+	if bestParent == -1 {
+		return -1, -1, nil, false
 	}
 	return bestParent, bestChild, bestRel, true
 }
 
-func nestedTreePrefix(parentSource string, parent Tree, childSource string, child Tree) ([]string, bool) {
-	parentSrc := filepath.Clean(strings.TrimSpace(parentSource))
-	childSrc := filepath.Clean(strings.TrimSpace(childSource))
+func nestedRootPrefix(parent Root, child Root) ([]string, bool) {
+	parentSrc := filepath.Clean(strings.TrimSpace(parent.Source))
+	childSrc := filepath.Clean(strings.TrimSpace(child.Source))
 	parentDst := filepath.Clean(strings.TrimSpace(parent.Dest))
 	childDst := filepath.Clean(strings.TrimSpace(child.Dest))
 	if parentSrc == "" || childSrc == "" || parentDst == "" || childDst == "" {
@@ -120,67 +110,109 @@ func nestedTreePrefix(parentSource string, parent Tree, childSource string, chil
 	return parts, true
 }
 
-func mergeTreeFiles(parent, child map[string]any, relParts []string) (map[string]any, error) {
-	out := cloneutils.AnyMap(parent)
-	if out == nil {
-		out = map[string]any{}
+func mergeRoot(parent Root, child Root, relParts []string) (Root, error) {
+	out := cloneRoot(parent)
+	mergedEntries, err := mergeRootEntries(out.Entries, relParts, child)
+	if err != nil {
+		return Root{}, err
 	}
-
-	node := out
-	for _, part := range relParts {
-		raw, exists := node[part]
-		if !exists {
-			next := map[string]any{}
-			node[part] = next
-			node = next
-			continue
-		}
-		if IsLeafSpec(raw) {
-			return nil, fmt.Errorf("cannot merge nested tree roots: %q is already a leaf", strings.Join(relParts, "."))
-		}
-		next, ok := raw.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("cannot merge nested tree roots at %q", strings.Join(relParts, "."))
-		}
-		node = next
-	}
-
-	src := cloneutils.AnyMap(child)
-	if src == nil {
-		return out, nil
-	}
-	if err := mergeNode(node, src, strings.Join(relParts, ".")); err != nil {
-		return nil, err
-	}
-
+	out.Entries = mergedEntries
 	return out, nil
 }
 
-func mergeNode(dst, src map[string]any, base string) error {
-	for key, srcVal := range src {
+func mergeRootEntries(entries map[string]Entry, relParts []string, child Root) (map[string]Entry, error) {
+	out := cloneEntries(entries)
+	if out == nil {
+		out = map[string]Entry{}
+	}
+
+	head := relParts[0]
+	entry, exists := out[head]
+	if !exists {
+		entry = Entry{}
+	}
+
+	if len(relParts) == 1 {
+		merged, err := mergeContainerEntry(entry, rootAsEntry(child), strings.Join(relParts, "."))
+		if err != nil {
+			return nil, err
+		}
+		out[head] = merged
+		return out, nil
+	}
+
+	entryType := strings.ToLower(strings.TrimSpace(entry.Type))
+	if entryType == "copy" || entryType == "link" {
+		return nil, fmt.Errorf("cannot merge nested roots: %q is already a leaf", strings.Join(relParts, "."))
+	}
+
+	mergedChildren, err := mergeRootEntries(entry.Entries, relParts[1:], child)
+	if err != nil {
+		return nil, err
+	}
+	entry.Entries = mergedChildren
+	out[head] = entry
+	return out, nil
+}
+
+func mergeContainerEntry(dst Entry, src Entry, path string) (Entry, error) {
+	dstType := strings.ToLower(strings.TrimSpace(dst.Type))
+	if dstType == "copy" || dstType == "link" {
+		return Entry{}, fmt.Errorf("cannot merge nested roots: %q is already a leaf", path)
+	}
+	if len(src.Entries) == 0 {
+		return cloneEntry(dst), nil
+	}
+
+	out := cloneEntry(dst)
+	if out.Defaults == nil {
+		out.Defaults = cloneDefaults(src.Defaults)
+	} else if src.Defaults != nil && !reflect.DeepEqual(out.Defaults, src.Defaults) {
+		return Entry{}, fmt.Errorf("cannot merge path %q due to conflicting defaults", path)
+	}
+
+	mergedEntries, err := mergeEntryMaps(out.Entries, src.Entries, path)
+	if err != nil {
+		return Entry{}, err
+	}
+	out.Entries = mergedEntries
+	return out, nil
+}
+
+func mergeEntryMaps(dst, src map[string]Entry, base string) (map[string]Entry, error) {
+	out := cloneEntries(dst)
+	if out == nil {
+		out = map[string]Entry{}
+	}
+
+	keys := make([]string, 0, len(src))
+	for key := range src {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	for _, key := range keys {
+		srcVal := src[key]
 		path := key
 		if base != "" {
 			path = base + "." + key
 		}
 
-		dstVal, exists := dst[key]
+		dstVal, exists := out[key]
 		if !exists {
-			dst[key] = cloneutils.Any(srcVal)
+			out[key] = cloneEntry(srcVal)
 			continue
 		}
 
-		srcLeaf := IsLeafSpec(srcVal)
-		dstLeaf := IsLeafSpec(dstVal)
+		srcLeaf := len(srcVal.Entries) == 0
+		dstLeaf := len(dstVal.Entries) == 0
 
 		if !srcLeaf && !dstLeaf {
-			srcMap, srcOK := srcVal.(map[string]any)
-			dstMap, dstOK := dstVal.(map[string]any)
-			if !srcOK || !dstOK {
-				return fmt.Errorf("cannot merge path %q", path)
+			merged, err := mergeContainerEntry(dstVal, srcVal, path)
+			if err != nil {
+				return nil, err
 			}
-			if err := mergeNode(dstMap, srcMap, path); err != nil {
-				return err
-			}
+			out[key] = merged
 			continue
 		}
 
@@ -188,7 +220,53 @@ func mergeNode(dst, src map[string]any, base string) error {
 			continue
 		}
 
-		return fmt.Errorf("cannot merge path %q due to conflicting definitions", path)
+		return nil, fmt.Errorf("cannot merge path %q due to conflicting definitions", path)
 	}
-	return nil
+	return out, nil
+}
+
+func rootAsEntry(root Root) Entry {
+	return Entry{
+		Defaults: cloneDefaults(root.Defaults),
+		Entries:  cloneEntries(root.Entries),
+	}
+}
+
+func cloneRoot(root Root) Root {
+	return Root{
+		Source:   root.Source,
+		Dest:     root.Dest,
+		Defaults: cloneDefaults(root.Defaults),
+		Entries:  cloneEntries(root.Entries),
+	}
+}
+
+func cloneEntries(entries map[string]Entry) map[string]Entry {
+	if entries == nil {
+		return nil
+	}
+	out := make(map[string]Entry, len(entries))
+	for key, entry := range entries {
+		out[key] = cloneEntry(entry)
+	}
+	return out
+}
+
+func cloneEntry(entry Entry) Entry {
+	return Entry{
+		Type:     entry.Type,
+		Track:    cloneBool(entry.Track),
+		Defaults: cloneDefaults(entry.Defaults),
+		Entries:  cloneEntries(entry.Entries),
+	}
+}
+
+func cloneDefaults(defaults *Defaults) *Defaults {
+	if defaults == nil {
+		return nil
+	}
+	return &Defaults{
+		Type:  defaults.Type,
+		Track: cloneBool(defaults.Track),
+	}
 }

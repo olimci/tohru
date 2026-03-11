@@ -2,25 +2,25 @@ package state
 
 // State stores the current state of the application.
 type State struct {
-	Manifest Manifest `json:"manifest"`      // current manifest state
-	Files    []File   `json:"file"`          // tohru managed files
-	Dirs     []Dir    `json:"dir,omitempty"` // auto-created parent dirs (cleanup if empty)
+	Profile Profile `json:"profile"`        // current profile state
+	Files   []File  `json:"files"`          // tohru managed files
+	Dirs    []Dir   `json:"dirs,omitempty"` // auto-created parent dirs (cleanup if empty)
 }
 
-// Manifest references the currently loaded manifest. path points to the directory containing the manifest, state indicates the application's state
-type Manifest struct {
+// Profile references the currently loaded profile.
+type Profile struct {
 	State string `json:"state"` // unloaded|loaded
 	Kind  string `json:"kind"`  // local (remote might be added later)
-	Loc   string `json:"loc"`   // path to manifest directory
+	Path  string `json:"path"`  // path to profile directory
 	Slug  string `json:"slug,omitempty"`
 	Name  string `json:"name,omitempty"`
 }
 
-// Profile is a cached profile entry used in profiles.json.
-type Profile struct {
+// CachedProfile is a cached profile entry used in profiles.json.
+type CachedProfile struct {
 	Slug string `json:"slug"`
 	Name string `json:"name,omitempty"`
-	Loc  string `json:"loc"`
+	Path string `json:"path"`
 }
 
 // File represents a managed object, ie one that the application created and is tracking
