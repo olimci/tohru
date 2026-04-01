@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/olimci/tohru/pkg/version"
 	"github.com/urfave/cli/v3"
 )
 
-func Execute(ctx context.Context, args []string) error {
+const repoLink = "github.com/olimci/tohru"
+
+func Execute(ctx context.Context, args []string, titleArt string) error {
 	app := &cli.Command{
 		Name:    "tohru",
 		Usage:   "a simple dotfiles manager",
@@ -19,6 +22,8 @@ func Execute(ctx context.Context, args []string) error {
 			},
 		},
 		Commands: []*cli.Command{
+			versionCommand(),
+
 			// application management
 			installCommand(),
 			uninstallCommand(),
@@ -31,6 +36,11 @@ func Execute(ctx context.Context, args []string) error {
 			reloadCommand(),
 			unloadCommand(),
 		},
+	}
+
+	if len(args) <= 1 {
+		fmt.Println(version.Banner(titleArt, repoLink) + "\n")
+		args = append(args, "help")
 	}
 
 	return app.Run(ctx, args)

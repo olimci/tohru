@@ -11,6 +11,10 @@ go install github.com/olimci/tohru
 ## Usage
 
 ```bash
+# show the banner and top-level help
+tohru
+# print the current version
+tohru version
 # install application files (optionally load a profile immediately)
 tohru install [profile]
 # list cached profile slugs and paths
