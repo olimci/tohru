@@ -8,12 +8,10 @@ import (
 
 const Version = "0.2.0"
 
-func Banner(titleArt, repoLink string) string {
-	titleArt = strings.TrimRight(titleArt, "\n")
-	if titleArt == "" {
-		return fmt.Sprintf("tohru v%s %s", Version, repoLink)
-	}
-	return fmt.Sprintf("%s v%s\n%s", titleArt, Version, repoLink)
+func Banner(repoLink string) string {
+	return fmt.Sprintf(`░▀█▀░█▀█░█░█░█▀▄░█░█ v%s
+░░█░░█░█░█▀█░█▀▄░█░█
+░░▀░░▀▀▀░▀░▀░▀░▀░▀▀▀ %s`, Version, repoLink)
 }
 
 // SemVer is a minimal semantic version representation.

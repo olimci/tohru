@@ -10,7 +10,7 @@ import (
 
 const repoLink = "github.com/olimci/tohru"
 
-func Execute(ctx context.Context, args []string, titleArt string) error {
+func Execute(ctx context.Context, args []string) error {
 	app := &cli.Command{
 		Name:    "tohru",
 		Usage:   "a simple dotfiles manager",
@@ -39,7 +39,7 @@ func Execute(ctx context.Context, args []string, titleArt string) error {
 	}
 
 	if len(args) <= 1 {
-		fmt.Println(version.Banner(titleArt, repoLink) + "\n")
+		fmt.Println(version.Banner(repoLink) + "\n")
 		args = append(args, "help")
 	}
 
