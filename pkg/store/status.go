@@ -26,6 +26,8 @@ type TrackedStatus struct {
 	BackupPresent bool
 	Drifted       bool
 	Missing       bool
+	ManagedKind   digest.Kind `json:"-"`
+	Operation     string      `json:"-"`
 }
 
 type BackupRefStatus struct {
@@ -58,6 +60,12 @@ func (s Store) Status() (StatusSnapshot, error) {
 		}
 
 		item := TrackedStatus{Path: path}
+		kind, operation, presentationErr := trackedPresentation(f.Current.Digest)
+		if presentationErr != nil {
+			return StatusSnapshot{}, fmt.Errorf("parse tracked object metadata for %s: %w", f.Path, presentationErr)
+		}
+		item.ManagedKind = kind
+		item.Operation = operation
 
 		current, exists, snapshotErr := maybeSnapshot(path)
 		if snapshotErr != nil {
@@ -154,4 +162,20 @@ func scanBackupStore(store Store) (map[string]struct{}, []string, error) {
 	slices.Sort(broken)
 
 	return available, broken, nil
+}
+
+func trackedPresentation(rawDigest string) (digest.Kind, string, error) {
+	d, err := digest.Parse(rawDigest)
+	if err != nil {
+		return "", "", err
+	}
+
+	switch d.Kind {
+	case digest.KindSymlink:
+		return d.Kind, "link", nil
+	case digest.KindFile, digest.KindDir:
+		return d.Kind, "copy", nil
+	default:
+		return d.Kind, "", nil
+	}
 }

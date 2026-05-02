@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/olimci/tohru/pkg/store"
-	"github.com/olimci/tohru/pkg/utils/profileutils"
 	"github.com/urfave/cli/v3"
 )
 
@@ -24,6 +22,15 @@ func statusCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:  "json",
 				Usage: "print full status as JSON",
+			},
+			&cli.BoolFlag{
+				Name:  "flat",
+				Usage: "show compact flat status output",
+			},
+			&cli.StringFlag{
+				Name:  "color",
+				Usage: "color mode: auto|always|never",
+				Value: "auto",
 			},
 		},
 		Action: statusAction,
@@ -55,73 +62,25 @@ func statusAction(_ context.Context, cmd *cli.Command) error {
 	backups := cmd.Bool("backups")
 
 	if backups {
-		printBackups(snapshot)
-		return nil
-	}
-
-	profileState := strings.ToLower(snapshot.Profile.State)
-	if profileState == "loaded" && strings.TrimSpace(snapshot.Profile.Path) != "" {
-		fmt.Printf("On profile %s\n", profileutils.DisplayName(snapshot.Profile.Slug, snapshot.Profile.Name, snapshot.Profile.Path))
-	} else {
-		fmt.Println("No profile loaded")
-	}
-
-	fmt.Println()
-	fmt.Println("Tracked objects:")
-	if len(snapshot.Tracked) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for _, tracked := range snapshot.Tracked {
-			switch {
-			case tracked.Drifted && tracked.Missing:
-				fmt.Printf("  X  %s\n", tracked.Path)
-			case tracked.Drifted:
-				fmt.Printf("  M  %s\n", tracked.Path)
-			case tracked.PrevDigest == "":
-				fmt.Printf("  T  %s\n", tracked.Path)
-			case tracked.BackupPresent:
-				fmt.Printf("  B  %s\n", tracked.Path)
-			default:
-				fmt.Printf("  !  %s\n", tracked.Path)
-			}
+		output, err := renderBackups(snapshot, statusRenderOptions{
+			ColorMode: cmd.String("color"),
+			Stdout:    os.Stdout,
+		})
+		if err != nil {
+			return err
 		}
+		_, err = fmt.Fprint(os.Stdout, output)
+		return err
 	}
 
-	return nil
-}
-
-func printBackups(snapshot store.StatusSnapshot) {
-	fmt.Println("Backups referenced by state:")
-	if len(snapshot.BackupRefs) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for _, ref := range snapshot.BackupRefs {
-			stateLabel := "missing"
-			if ref.Present {
-				stateLabel = "present"
-			}
-			fmt.Printf("  %s  %s\n", stateLabel, ref.Digest)
-			for _, path := range ref.Paths {
-				fmt.Printf("       %s\n", path)
-			}
-		}
+	output, err := renderStatus(snapshot, statusRenderOptions{
+		Flat:      cmd.Bool("flat"),
+		ColorMode: cmd.String("color"),
+		Stdout:    os.Stdout,
+	})
+	if err != nil {
+		return err
 	}
-
-	fmt.Println()
-	fmt.Println("Unreferenced backup objects:")
-	if len(snapshot.OrphanedBackups) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for _, cid := range snapshot.OrphanedBackups {
-			fmt.Printf("  orphan  %s\n", cid)
-		}
-	}
-
-	if len(snapshot.BrokenBackups) > 0 {
-		fmt.Println()
-		fmt.Println("Broken backup entries:")
-		for _, cid := range snapshot.BrokenBackups {
-			fmt.Printf("  broken  %s\n", cid)
-		}
-	}
+	_, err = fmt.Fprint(os.Stdout, output)
+	return err
 }
