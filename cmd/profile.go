@@ -275,7 +275,7 @@ func defaultManifest(slug string) manifest.Manifest {
 
 type addEntry struct {
 	Parts []string
-	Value manifest.Entry
+	Value manifest.Node
 }
 
 type copyJob struct {
@@ -352,9 +352,9 @@ func pickRoot(m *manifest.Manifest, profileDir, targetPath string) (int, string,
 	}
 
 	m.Roots = append(m.Roots, manifest.Root{
-		Source:  source,
-		Dest:    dest,
-		Entries: map[string]manifest.Entry{},
+		Source: source,
+		Dest:   dest,
+		Tree:   manifest.Tree{},
 	})
 	return len(m.Roots) - 1, filepath.Join(profileDir, source), fileutils.SplitPathParts(rel), nil
 }
@@ -386,7 +386,7 @@ func rootSourceRoot(profileDir, source string) (string, bool, error) {
 func buildEntries(localPath string, relParts []string, info os.FileInfo) ([]addEntry, error) {
 	switch {
 	case info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0:
-		return []addEntry{{Parts: append([]string(nil), relParts...), Value: manifest.Entry{Type: "copy"}}}, nil
+		return []addEntry{{Parts: append([]string(nil), relParts...), Value: manifest.FileNode("copy")}}, nil
 	case info.IsDir():
 		entries := make([]addEntry, 0, 8)
 		err := filepath.WalkDir(localPath, func(path string, d fs.DirEntry, err error) error {
@@ -408,14 +408,14 @@ func buildEntries(localPath string, relParts []string, info os.FileInfo) ([]addE
 					return err
 				}
 				if empty {
-					entries = append(entries, addEntry{Parts: parts, Value: manifest.Entry{Type: "dir"}})
+					entries = append(entries, addEntry{Parts: parts, Value: manifest.DirectoryNode(nil, nil)})
 				}
 				return nil
 			}
 
 			t := d.Type()
 			if t.IsRegular() || t&os.ModeSymlink != 0 {
-				entries = append(entries, addEntry{Parts: parts, Value: manifest.Entry{Type: "copy"}})
+				entries = append(entries, addEntry{Parts: parts, Value: manifest.FileNode("copy")})
 				return nil
 			}
 			return fmt.Errorf("unsupported file type at %s", path)
@@ -424,7 +424,7 @@ func buildEntries(localPath string, relParts []string, info os.FileInfo) ([]addE
 			return nil, fmt.Errorf("walk source directory %s: %w", localPath, err)
 		}
 		if len(entries) == 0 {
-			entries = append(entries, addEntry{Parts: append([]string(nil), relParts...), Value: manifest.Entry{Type: "dir"}})
+			entries = append(entries, addEntry{Parts: append([]string(nil), relParts...), Value: manifest.DirectoryNode(nil, nil)})
 		}
 		return entries, nil
 	default:
@@ -461,11 +461,11 @@ func addPath(s store.Store, slug, localPath string, info os.FileInfo) ([]string,
 		return nil, err
 	}
 	root := m.Roots[rootIndex]
-	if root.Entries == nil {
-		root.Entries = map[string]manifest.Entry{}
+	if root.Tree == nil {
+		root.Tree = manifest.Tree{}
 	}
 	for _, entry := range entries {
-		if err := insertEntry(root.Entries, entry.Parts, entry.Value); err != nil {
+		if err := insertEntry(root.Tree, entry.Parts, entry.Value); err != nil {
 			return nil, err
 		}
 	}
@@ -532,7 +532,7 @@ func copyJobs(localPath, sourceRoot string, relParts []string, entries []addEntr
 	case info.IsDir():
 		jobs := make([]copyJob, 0, len(entries))
 		for _, entry := range entries {
-			if strings.EqualFold(strings.TrimSpace(entry.Value.Type), "dir") {
+			if entry.Value.IsDir() {
 				continue
 			}
 			suffix, err := suffixParts(entry.Parts, relParts)
@@ -616,7 +616,7 @@ func isEmptyDir(path string) (bool, error) {
 	return len(entries) == 0, nil
 }
 
-func insertEntry(root map[string]manifest.Entry, parts []string, value manifest.Entry) error {
+func insertEntry(root manifest.Tree, parts []string, value manifest.Node) error {
 	if len(parts) == 0 {
 		return fmt.Errorf("cannot add empty path")
 	}
@@ -626,20 +626,19 @@ func insertEntry(root map[string]manifest.Entry, parts []string, value manifest.
 		part := parts[i]
 		entry, exists := node[part]
 		if !exists {
-			next := manifest.Entry{Entries: map[string]manifest.Entry{}}
+			next := manifest.DirectoryNode(nil, manifest.Tree{})
 			node[part] = next
-			node = next.Entries
+			node = next.Dir.Tree
 			continue
 		}
-		entryType := strings.ToLower(strings.TrimSpace(entry.Type))
-		if entryType == "copy" || entryType == "link" {
+		if entry.IsFile() {
 			return fmt.Errorf("cannot add %q: %q is already a leaf entry", strings.Join(parts, "."), strings.Join(parts[:i+1], "."))
 		}
-		if entry.Entries == nil {
-			entry.Entries = map[string]manifest.Entry{}
+		if entry.Dir.Tree == nil {
+			entry.Dir.Tree = manifest.Tree{}
 			node[part] = entry
 		}
-		node = entry.Entries
+		node = entry.Dir.Tree
 	}
 
 	leaf := parts[len(parts)-1]

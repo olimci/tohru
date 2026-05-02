@@ -59,21 +59,17 @@ dotfiles are defined with a `tohru.json` file:
       "defaults": {
         "type": "link"
       },
-      "entries": {
-        ".zshrc": { "type": "copy" },
+      "tree": {
+        ".zshrc": ["copy"],
         ".config": {
-          "entries": {
-            "kitty": {
-              "entries": {
-                "kitty.conf": {},
-                "theme.conf": {},
-                "kitty.app.png": { "type": "copy", "track": false }
-              }
-            },
-            "nvim": {
-              "entries": {
-                "after": { "type": "dir", "track": false }
-              }
+          "kitty": {
+            "kitty.conf": [],
+            "theme.conf": [],
+            "kitty.app.png": ["copy", "untracked"]
+          },
+          "nvim": {
+            "after": {
+              ".": ["untracked"]
             }
           }
         }
@@ -82,6 +78,8 @@ dotfiles are defined with a `tohru.json` file:
   ]
 }
 ```
+
+In the structural tree format, arrays represent files and objects represent directories. Directory metadata uses the reserved `"."` key, and an empty array `[]` means “inherit defaults with no overrides”.
 
 In profile source trees, hidden path segments are encoded with a `dot_` prefix, so `.config/nvim` is stored as `dot_config/nvim`.
 
